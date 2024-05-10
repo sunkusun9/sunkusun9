@@ -1,4 +1,7 @@
-### Hi there 👋
+### 데이터분석가 sunkusun9의 공간입니다. 
+
+데이터 분석을 공부한 내용을 기록하고 공유하기 위한 공간입니다.
+
 
 <!--
 **sunkusun9/sunkusun9** is a ✨ _special_ ✨ repository because its `README.md` (this file) appears on your GitHub profile.
