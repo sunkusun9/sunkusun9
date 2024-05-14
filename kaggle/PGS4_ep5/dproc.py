@@ -245,7 +245,7 @@ def apply_processor(dfl, processor, X_val, info_prov, df_feat=None):
     dfl = dfl.with_columns(*d)
     return dfl.hstack(dfl_proc), df_feat
 
-def select_opr(dfl, select_proc, desc, df_feat=None):
+def select_opr(dfl, select_proc, desc, src, df_feat=None):
     """
     apply select_proc
     Parameters:
@@ -255,8 +255,10 @@ def select_opr(dfl, select_proc, desc, df_feat=None):
             dfl proccesing function
         X_val: list
             Proprocessign target variable names
-        info_prov: Function
+        desc: Function
             The function provide columns information
+        src: str
+            The name of source
         df_feat: pd.DataFrame
             Feature DataFrame, if None, does not make feature information
     Returns:
@@ -285,7 +287,7 @@ def select_opr(dfl, select_proc, desc, df_feat=None):
             'val': dfl_proc.columns,
             'type': [str(i) for i in dfl_proc.dtypes], 
             'Description': [i[1] for i in desc],
-            'src': [i[0] for i in desc],
+            'src': [src] * len(desc),
         }).set_index('val')
         df_feat = pd.concat([df_feat, df_feat_], axis=0)
     d = []
