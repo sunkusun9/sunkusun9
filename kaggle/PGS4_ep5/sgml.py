@@ -414,7 +414,7 @@ class SGStacking:
                 Rerun
         Returns
             object, dict
-            model instance, train result 
+            model information, train result 
         Example
         >>> lgb_result, train_result = stk.eval_model(
         >>>    'lgb_1', lgb.LGBMRegressor, {'verbose': -1, 'n_estimators': 140}, X_all,
