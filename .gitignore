@@ -4,3 +4,4 @@ img/
 .ipynb_checkpoints/
 __pycache__/
 result/
+catboost_info/
