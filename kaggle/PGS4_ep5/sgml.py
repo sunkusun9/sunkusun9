@@ -10,7 +10,7 @@ def gb_valid_config(train_set, valid_set):
     return {}, {'eval_set': [train_set, valid_set] if valid_set is not None else [train_set]}
 
 def sgnn_valid_config(train_set, valid_set):
-    return {}, {'eval_set': valid_set if valid_set is not None else None}
+    return {}, {'eval_set': valid_set if valid_set is not None else train_set}
 
 def lgb_learning_result(m, train_result):
     return (
@@ -63,7 +63,7 @@ def sgnn_learning_result(m, train_result):
         train_result
     )
 
-def train_model(model, model_params, df_train, X, y, valid_splitter=None, preprocessor=None, fit_params={}, valid_config_proc = None):
+def train_model(model, model_params, df_train, X, y, valid_splitter=None, preprocessor=None, fit_params={}, valid_config_proc = None, target_func=None):
     """
     Train a model
     Parameters:
@@ -117,28 +117,37 @@ def train_model(model, model_params, df_train, X, y, valid_splitter=None, prepro
             X_valid = df_valid[X]
         X_train = df_train[X]
         result['variables'] = X.copy()
+    if target_func is None:
+        y_train = df_train[y]
+        if df_valid is not None:
+            y_valid = df_valid[y]
+    else:
+        y_train = target_func(df_train, df_train[y])
+        if df_valid is not None:
+            y_valid = target_func(df_valid, df_valid[y])
     if valid_config_proc is not None:
         if X_valid is not None:
-            model_params_2, fit_params_2 = valid_config_proc((X_train, df_train[y]), (X_valid, df_valid[y]))
+            model_params_2, fit_params_2 = valid_config_proc((X_train, y_train), (X_valid, y_valid))
             result['valid_shape'] = X_valid.shape
         else:
-            model_params_2, fit_params_2 = valid_config_proc((X_train, df_train[y]), None)
+            model_params_2, fit_params_2 = valid_config_proc((X_train, y_train), None)
     else:
         model_params_2, fit_params_2 = {}, {}
     result['train_shape'] = X_train.shape
     result['target'] = y
+    result['target_func'] = target_func
     m =  model(**model_params, **model_params_2)
-    m.fit(X_train, df_train[y], **fit_params, **fit_params_2)
-    del X_train
+    m.fit(X_train, y_train, **fit_params, **fit_params_2)
+    del X_train, y_train
     if df_valid is not None:
-        del X_valid, df_valid
+        del X_valid, y_valid, df_valid
     gc.collect()
     if preprocessor is not None:
         m = make_pipeline(preprocessor, m)
     return m, result
 
 def cv_model(sp, model, model_params, df, X, y, predict_func, eval_metric,
-                   preprocessor=None, result_proc=None, train_data_proc=None, train_params={}, sp_y=None):
+                   preprocessor=None, result_proc=None, train_data_proc=None, train_params={}, sp_y=None, target_func=None, target_invfunc=None):
     """
     Train a model
     Parameters:
@@ -196,10 +205,14 @@ def cv_model(sp, model, model_params, df, X, y, predict_func, eval_metric,
         df_cv_train, df_valid = df.iloc[train_idx], df.iloc[valid_idx]
         if train_data_proc != None:
             df_cv_train = train_data_proc(df_cv_train)
-        m, train_result = train_model(model, model_params, df_cv_train, X, y, preprocessor=preprocessor, **train_params)
-        valid_prds.append(predict_func(m, df_valid, X))
+        m, train_result = train_model(model, model_params, df_cv_train, X, y, preprocessor=preprocessor, target_func=target_func, **train_params)
+        if target_invfunc is None:
+            valid_prds.append(predict_func(m, df_valid, X))
+            train_metrics.append(eval_metric(df_cv_train, predict_func(m, df_cv_train, X)))
+        else:
+            valid_prds.append(target_invfunc(df_valid, predict_func(m, df_valid, X)))
+            train_metrics.append(eval_metric(df_cv_train, target_invfunc(df_cv_train, predict_func(m, df_cv_train, X))))
         valid_metrics.append(eval_metric(df_valid, valid_prds[-1]))
-        train_metrics.append(eval_metric(df_cv_train, predict_func(m, df_cv_train, X)))
         if result_proc is not None:
             if preprocessor is None:
                 train_result = result_proc(m, train_result)
@@ -247,7 +260,7 @@ class SGStacking:
         self.meta_X = None
         self.sp_y = sp_y
 
-    def get_result(self, model_name, model, preprocessor, model_param, X):
+    def get_result(self, model_name, model, preprocessor, model_param, X, target_func):
         """
         get the results of the model
         Parameters:
@@ -272,7 +285,8 @@ class SGStacking:
         """
         if model_name in self.model_result:
             result_ = self.model_result[model_name]
-            model_key = str(model) + str(preprocessor) + str(model_param) + ','.join(X)
+            func_name = target_func.__name__ if target_func is not None else str(target_func)
+            model_key = str(model) + str(preprocessor) + str(model_param) + func_name + ','.join(X)
             if model_key in result_['model_key']:
                 idx = result_['model_key'].index(model_key)
                 return {
@@ -285,8 +299,9 @@ class SGStacking:
             return None
         return None
     
-    def _put_result(self, model_name, model, preprocessor, model_params, X, train_metrics, valid_metrics, s_prd, model_result_cv, train_info):
-        model_key = str(model) + str(preprocessor) + str(model_params) + ','.join(X)
+    def _put_result(self, model_name, model, preprocessor, model_params, X, train_metrics, valid_metrics, s_prd, model_result_cv, train_info, target_func, target_invfunc):
+        func_name = target_func.__name__ if target_func is not None else str(target_func)
+        model_key = str(model) + str(preprocessor) + str(model_params) + func_name + ','.join(X)
         if model_name in self.model_result:
             result_ = self.model_result[model_name]
             if model_key in result_['model_key']:
@@ -298,7 +313,7 @@ class SGStacking:
                 if result_['best_result'] is None or \
                     (self.greater_better and metric >= np.max(result_['metric'])) or \
                     (not self.greater_better and metric <= np.min(result_['metric'])):
-                    result_['best_result'] = (s_prd, model_result_cv)
+                    result_['best_result'] = (s_prd, model_result_cv, target_invfunc)
                     if model_name in self.selected_models:
                         del self.selected_models[model_name]
                 result_['metric'][idx] = metric
@@ -328,10 +343,21 @@ class SGStacking:
         if result_['best_result'] is None or \
             (self.greater_better and metric >= np.max(result_['metric'])) or \
             (not self.greater_better and metric <= np.min(result_['metric'])):
-            result_['best_result'] = (s_prd, model_result_cv)
+            result_['best_result'] = (s_prd, model_result_cv, target_func, target_invfunc)
             if model_name in self.selected_models:
                 del self.selected_models[model_name]
         result_['metric'].append(metric)
+
+    def append_vars(self, pd_vars):
+        """
+        Append varaibles to train data
+        Parameters:
+            pd_vars: pd.DataFrame or pd.Series
+        """
+        if (pd_vars.index == self.df_train.index).all():
+            self.df_train = pd.concat([self.df_train, pd_vars], axis=1)
+        else:
+            raise Exception("pd_vars should have same index with existing train data")
     
     def compact_result(self, model_name):
         """
@@ -388,9 +414,19 @@ class SGStacking:
             train_metrics = lambda x: x['train_metrics'].apply(lambda x: '{:.5f}±{:.5f}'.format(np.mean(x), np.std(x))),
             valid_metrics = lambda x: x['valid_metrics'].apply(lambda x: '{:.5f}±{:.5f}'.format(np.mean(x), np.std(x))),
         )
+
+    def get_best_result(self, model_name):
+        result_ = self.model_result[model_name]
+        if self.greater_better:
+            idx = np.argmax(result_['metric'])
+        else:
+            idx = np.argmin(result_['metric'])
+        
+        ret = self.get_result(model_name, result_['model'][idx], result_['preprocessor'][idx], result_['model_params'][idx], result_['X'][idx], result_['best_result'][-2])
+        return ret, result_['best_result'][1]
     
     def eval_model(self, model_name, model, model_params, X,  
-                   preprocessor=None, result_proc=None, train_data_proc=None, train_params={}, rerun=False):
+                   preprocessor=None, result_proc=None, train_data_proc=None, train_params={}, target_func=None, target_invfunc=None, rerun=False):
         """
         Evaluate a base model and store the result.
         Parameters:
@@ -408,8 +444,12 @@ class SGStacking:
                 the processor for the result of training 
             train_data_proc: function
                 the processor for traing data
-            train_params: 
+            train_params: dict
                 the parameter for train_model
+            target_func: function
+                the target transform function
+            target_invfunc: function
+                the target inverse transform function
             rerun: Boolean
                 Rerun
         Returns
@@ -427,19 +467,20 @@ class SGStacking:
         >>> )
         """
         if not rerun:
-            result = self.get_result(model_name, model, preprocessor, model_params, X)
+            result = self.get_result(model_name, model, preprocessor, model_params, X, target_func)
             if result != None:
                 return result, None
         train_metrics, valid_metrics, s_prd, model_result_cv = \
             cv_model(
                 self.sp, model, model_params, self.df_train, X, self.target, self.predict_func, self.eval_metric,
-                preprocessor=preprocessor, result_proc=result_proc, train_data_proc=train_data_proc, train_params=train_params, sp_y=self.sp_y
+                preprocessor=preprocessor, result_proc=result_proc, train_data_proc=train_data_proc, train_params=train_params, sp_y=self.sp_y,
+                target_func=target_func, target_invfunc=target_invfunc
             )
         train_info = {
             'result_proc': result_proc, 'train_data_proc': train_data_proc, 'train_params': train_params
         }
-        self._put_result(model_name, model, preprocessor, model_params, X, train_metrics, valid_metrics, s_prd, model_result_cv, train_info)
-        return self.get_result(model_name, model, preprocessor, model_params, X), model_result_cv
+        self._put_result(model_name, model, preprocessor, model_params, X, train_metrics, valid_metrics, s_prd, model_result_cv, train_info, target_func, target_invfunc)
+        return self.get_result(model_name, model, preprocessor, model_params, X, target_func), model_result_cv
 
     def get_model_results(self, model_name):
         """
@@ -499,18 +540,23 @@ class SGStacking:
         train_info = result_['train_info'][idx]
         train_data_proc = train_info['train_data_proc']
         train_params = train_info['train_params']
-        result_proc = train_info['result_proc']        
+        result_proc = train_info['result_proc']   
+        target_func = result_['best_result'][2]
+        target_invfunc = result_['best_result'][3]
         if train_data_proc is not None:
             df = train_data_proc(df)
-        m, train_result = train_model(model, model_params, self.df_train, X, self.target, preprocessor=preprocessor, **train_params)
-        train_metric = self.eval_metric(self.df_train, self.predict_func(m, self.df_train, X))
+        m, train_result = train_model(model, model_params, self.df_train, X, self.target, preprocessor=preprocessor, target_func=target_func, **train_params)
+        if target_invfunc is None:
+            train_metric = self.eval_metric(self.df_train, self.predict_func(m, self.df_train, X))
+        else:
+            train_metric = self.eval_metric(self.df_train, target_invfunc(self.df_train, self.predict_func(m, self.df_train, X)))
         if result_proc is not None:
             if preprocessor is None:
                 train_result = result_proc(m, train_result)
             else:
                 train_result = result_proc(m[-1], train_result)
         self.selected_models[model_name] = (
-            m, X, train_result, train_metric
+            m, X, train_result, train_metric, target_func, target_invfunc
         )
         return m, train_result, train_metric
 
@@ -536,8 +582,8 @@ class SGStacking:
             inc_vals: list
                 the variables names to include to the meta model data
         Returns:
-            list, list, list
-            train_metric, valid_metrics, cv results
+            list, list, Series, list
+            train_metric, valid_metrics, cv prediction, cv results
         """
         vals = [self.target] + inc_vals
         if self.sp_y is not None:
@@ -549,9 +595,9 @@ class SGStacking:
             self.sp, model, model_params, df, model_names, self.target, self.predict_func, self.eval_metric, 
             result_proc=result_proc, train_params=train_params, sp_y=self.sp_y
         )
-        return train_metrics, valid_metrics, model_result_cv
+        return train_metrics, valid_metrics, s_prd, model_result_cv
     
-    def fit(self, model, model_params, model_names, df, y, result_proc=None, train_params={}):
+    def fit(self, model, model_params, model_names, result_proc=None, train_params={}):
         """
         fit the meta model
         Parameters:
@@ -561,8 +607,6 @@ class SGStacking:
                 the parameter of meta model
             model_names:
                 the names of base model
-            s_y: Series or DataFrame
-                the target value(s)
             result_proc: function
                 the function to extract the result
             train_params: dict
@@ -573,8 +617,8 @@ class SGStacking:
         """
         df = pd.concat([
                 self.model_result[i]['best_result'][0].rename(i) for i in model_names
-            ] + [df], axis=1).sort_index()
-        m, train_result = train_model(model, model_params, df, model_names, y, **train_params)
+            ] + [self.df_train[self.target]], axis=1).sort_index()
+        m, train_result = train_model(model, model_params, df, model_names, self.target, **train_params)
         train_metric = self.eval_metric(df, self.predict_func(m, df, model_names))
         if result_proc is not None:
             train_result = result_proc(m, train_result)
@@ -594,8 +638,11 @@ class SGStacking:
         """
         prds = list()
         for m_ in self.meta_X:
-            m, X, _, _ = self.selected_models[m_]
-            prds.append(self.predict_func(m, df, X).rename(m_))
+            m, X, _, _, _, target_invfunc  = self.selected_models[m_]
+            if target_invfunc is None:
+                prds.append(self.predict_func(m, df, X).rename(m_))
+            else:
+                prds.append(target_invfunc(df, self.predict_func(m, df, X)).rename(m_))
         return self.meta_model.predict(pd.concat(prds, axis=1))
 
     def predict_with_base(self, model_name, df):
@@ -607,8 +654,11 @@ class SGStacking:
             df: pd.DataFrame
                 the data to predict 
         """
-        m, X, _, _ = self.selected_models[model_name]
-        return self.predict_func(m, df, X).rename(model_name)
+        m, X, _, _, _, target_invfunc = self.selected_models[model_name]
+        if target_invfunc is None:
+            return self.predict_func(m, df, X).rename(model_name)
+        else:
+            return target_invfunc(df, self.predict_func(m, df, X)).rename(model_name)
         
     def save_model(self, file_name):
         """
