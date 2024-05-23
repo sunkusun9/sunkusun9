@@ -355,6 +355,16 @@ class SGStacking:
             pd_vars: pd.DataFrame or pd.Series
         """
         if (pd_vars.index == self.df_train.index).all():
+            if type(pd_vars) == pd.Series and pd_vars.name in self.df_train.columns:
+                self.df_train[pd_vars.name] = pd_vars
+                return
+            else:
+                d_cols = [i for i in pd_vars.columns if i in df_train.columns]
+                if len(d_cols) > 0:
+                    for i in d_cols:
+                        self.df_train[i] = pd_vars.pop(i)
+                if len(pd_vars.columns) == 0:
+                    return
             self.df_train = pd.concat([self.df_train, pd_vars], axis=1)
         else:
             raise Exception("pd_vars should have same index with existing train data")
