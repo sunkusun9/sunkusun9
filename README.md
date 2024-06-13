@@ -2,6 +2,11 @@
 
 데이터 분석을 공부한 내용을 기록하고 공유하기 위한 공간입니다.
 
+현재 데이터분석 및 추천시스템 강사로 활동하고 있습니다.
+
+같이 논의해보고 싶으신 주제가 있으시다면 아래 이메일로 연락주세요. 
+
+E-mail: sun9sun9@gmail.com
 
 <!--
 **sunkusun9/sunkusun9** is a ✨ _special_ ✨ repository because its `README.md` (this file) appears on your GitHub profile.
