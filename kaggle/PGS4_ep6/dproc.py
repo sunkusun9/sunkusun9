@@ -343,11 +343,14 @@ def apply_procs(dfl, procs, df_feat=None):
             dfl, df_feat = dfl.pipe(partial(proc, df_feat=df_feat))
     return dfl, df_feat
 
-def ord_prov(p, v):
+def ord_prov(p, v, suffix=None):
     """
     Information provider for Oridinal Encoder
     """
-    return ('ord', p, 'OrdinalEncoder: ' + p, pl.Int16)
+    if suffix is None:
+        return ('ord', p, 'OrdinalEncoder: ' + p, pl.Int16)
+    else:
+        return ('ord', p + '_' + suffix, 'OrdinalEncoder: ' + p, pl.Int16)
 
 def ohe_prov(p, v):
     """
