@@ -251,7 +251,7 @@ def select_opr(dfl, select_proc, desc, src, df_feat=None):
     Parameters:
         dfl: pl.DataFrame
             Data DataFrame to process
-        processor: Function
+        select_proc: Function
             dfl proccesing function
         desc: Function
             The function provide columns information
