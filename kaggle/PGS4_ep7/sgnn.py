@@ -34,7 +34,6 @@ def create_model(inp, o, config, embedding,
             L1 regularization of the last layer.
         l2: float
             L2 regularization of the last layer.
-        
     """
     if type(inp) == dict:
         X_inp = {}
@@ -207,8 +206,8 @@ class NNEstimator(BaseEstimator):
                     If ordinal is list, X should be DataFrame. In this case, the ordinal is the column names of ordinal inputs.
                     If ordinal is the number, ordinal is the size of ordinal inputs.
                 embedding: list
-                    If embedding is list, X should be DataFrame. In this case, the ordinal is the column names of embedding inputs.
-                    If embedding is the number, embedding is the size of embedding inputs.
+                    If X is DataFrame, the list is consisted of (list of columns, input dimension, output dimension, l1 regularization, l2 regularization) tuples
+                    If X is numpy array, the list is consisted of (the size of input, input dimension, output dimension, l1 regularization, l2 regularization) tuples
                 batch_size: integer
                     The size of the batch of the dataset.
                 shuffle_size: integer

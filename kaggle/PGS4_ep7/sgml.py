@@ -9,10 +9,19 @@ import gc
 def gb_valid_config(train_set, valid_set):
     return {}, {'eval_set': [train_set, valid_set] if valid_set is not None else [train_set]}
 
+def gb_valid_config2(train_set, valid_set):
+    return {}, {'eval_set': [valid_set] if valid_set is not None else [train_set]}
+
 def sgnn_valid_config(train_set, valid_set):
     return {}, {'eval_set': valid_set if valid_set is not None else train_set}
 
-def lgb_learning_result(m, train_result):
+def pass_learning_result(m, train_result, preprocessor=None):
+    if preprocessor is None:
+        return m, train_result
+    else:
+        return make_pipeline(preprocessor, m), train_result
+
+def lgb_learning_result(m, train_result, preprocessor=None):
     return (
         pd.concat([
             pd.DataFrame(
@@ -27,7 +36,7 @@ def lgb_learning_result(m, train_result):
         train_result
     )
 
-def xgb_learning_result(m, train_result):
+def xgb_learning_result(m, train_result, preprocessor=None):
     return (
         pd.concat([
             pd.DataFrame(
@@ -42,7 +51,7 @@ def xgb_learning_result(m, train_result):
         train_result
     )
 
-def cb_learning_result(m, train_result):
+def cb_learning_result(m, train_result, preprocessor=None):
     return (
         pd.concat([
             pd.DataFrame(
@@ -57,7 +66,7 @@ def cb_learning_result(m, train_result):
         train_result
     )
 
-def sgnn_learning_result(m, train_result):
+def sgnn_learning_result(m, train_result, preprocessor=None):
     return (
         pd.DataFrame(m.history_),
         train_result
@@ -217,7 +226,7 @@ def cv_model(sp, model, model_params, df, X, y, predict_func, eval_metric,
             if preprocessor is None:
                 train_result = result_proc(m, train_result)
             else:
-                train_result = result_proc(m[-1], train_result)
+                train_result = result_proc(m[-1], train_result, m[0])
         model_result_cv.append(train_result)
     s_prd = pd.concat(valid_prds, axis=0)
     return train_metrics, valid_metrics, s_prd, model_result_cv
@@ -359,7 +368,7 @@ class SGStacking:
                 self.df_train[pd_vars.name] = pd_vars
                 return
             else:
-                d_cols = [i for i in pd_vars.columns if i in df_train.columns]
+                d_cols = [i for i in pd_vars.columns if i in self.df_train.columns]
                 if len(d_cols) > 0:
                     for i in d_cols:
                         self.df_train[i] = pd_vars.pop(i)
@@ -434,6 +443,10 @@ class SGStacking:
         
         ret = self.get_result(model_name, result_['model'][idx], result_['preprocessor'][idx], result_['model_params'][idx], result_['X'][idx], result_['best_result'][-2])
         return ret, result_['best_result'][1]
+
+    def get_best_result_cv(self, model_name):
+        result_ = self.model_result[model_name]
+        return result_['best_result'][0]
     
     def eval_model(self, model_name, model, model_params, X,  
                    preprocessor=None, result_proc=None, train_data_proc=None, train_params={}, target_func=None, target_invfunc=None, rerun=False):
@@ -492,6 +505,51 @@ class SGStacking:
         self._put_result(model_name, model, preprocessor, model_params, X, train_metrics, valid_metrics, s_prd, model_result_cv, train_info, target_func, target_invfunc)
         return self.get_result(model_name, model, preprocessor, model_params, X, target_func), model_result_cv
 
+    def eval_model_cv(self, sp, model, model_params, X,  
+                   preprocessor=None, result_proc=None, train_data_proc=None, train_params={}, target_func=None, target_invfunc=None):
+        """
+        eval model with givem splitter
+        Parameters:
+            sp: sklearn.model_selection.Splitter
+                splitter
+            model: Class
+                Model class
+            model_param: dict
+                Model hyper parameters
+            X: list
+                input variable names
+            preprocessor: sklearn.preprocessing. 
+                preprocessor. it will be connected using make_pipeline
+            result_proc: function
+                the processor for the result of training 
+            train_data_proc: function
+                the processor for traing data
+            train_params: dict
+                the parameter for train_model
+            target_func: function
+                the target transform function
+            target_invfunc: function
+                the target inverse transform function
+            rerun: Boolean
+                Rerun
+        Returns
+            object, dict
+            model information, train result
+        """
+        train_metrics, valid_metrics, s_prd, model_result_cv = \
+            cv_model(
+                sp, model, model_params, self.df_train, X, self.target, self.predict_func, self.eval_metric,
+                preprocessor=preprocessor, result_proc=result_proc, train_data_proc=train_data_proc, train_params=train_params, sp_y=self.sp_y,
+                target_func=target_func, target_invfunc=target_invfunc
+            )
+        return {
+                'model': model,
+                'preprocessor': preprocessor,
+                'model_param': model_params,
+                'train_metrics': train_metrics,
+                'valid_metrics': valid_metrics,
+        }, model_result_cv
+    
     def get_model_results(self, model_name):
         """
         get the training results of the model
@@ -593,7 +651,7 @@ class SGStacking:
                 the variables names to include to the meta model data
         Returns:
             list, list, Series, list
-            train_metric, valid_metrics, cv prediction, cv results
+            train_metrics, valid_metrics, cv_prediction, cv_results
         """
         vals = [self.target] + inc_vals
         if self.sp_y is not None:
@@ -625,6 +683,11 @@ class SGStacking:
             dict
                 train result
         """
+        if model is None:
+            self.meta_model = None
+            self.meta_X = model_names
+            return None
+            
         df = pd.concat([
                 self.model_result[i]['best_result'][0].rename(i) for i in model_names
             ] + [self.df_train[self.target]], axis=1).sort_index()
@@ -653,6 +716,8 @@ class SGStacking:
                 prds.append(self.predict_func(m, df, X).rename(m_))
             else:
                 prds.append(target_invfunc(df, self.predict_func(m, df, X)).rename(m_))
+        if self.meta_model is None:
+            return prds
         return self.meta_model.predict(pd.concat(prds, axis=1))
 
     def predict_with_base(self, model_name, df):
