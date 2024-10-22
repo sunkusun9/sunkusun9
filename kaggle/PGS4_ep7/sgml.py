@@ -5,7 +5,6 @@ import numpy as np
 import pandas as pd
 import gc
 
-
 def gb_valid_config(train_set, valid_set):
     return {}, {'eval_set': [train_set, valid_set] if valid_set is not None else [train_set]}
 
@@ -71,6 +70,138 @@ def sgnn_learning_result(m, train_result, preprocessor=None):
         pd.DataFrame(m.history_),
         train_result
     )
+
+
+class LGBMFitProgressbar:
+    def __init__(self, precision = 5, start_position=0, metric=None, greater_is_better = True):
+        self.start_position = start_position
+        self.fmt = '{:.' + str(precision) + 'f}'
+        self.metric = metric
+        self.metric_hist = list()
+        self.greater_is_better = greater_is_better
+        
+    def _init(self, env):
+        self.total_iteration = env.end_iteration - env.begin_iteration
+        self.progress_bar = tqdm(total=self.total_iteration, desc='Round', position=self.start_position)
+
+    def __call__(self, env):
+        if env.iteration == env.begin_iteration:
+            self._init(env)
+        self.progress_bar.update(1)
+        if env.evaluation_result_list is not None:
+            results = list()
+            for item in env.evaluation_result_list:
+                if len(item) >= 3:
+                    data_name, eval_name, result = item[:3]
+                    results.append(
+                        '{}_{}:{}'.format(data_name, eval_name, self.fmt.format(result))
+                    )
+                    if self.metric == '{}_{}'.format(data_name, eval_name):
+                        self.metric_hist.append(result)
+            if self.metric is not None:
+                if self.greater_is_better:
+                    results.append(
+                        'Best {}: {}/{}'.format(self.metric, np.argmax(self.metric_hist) + 1, self.fmt.format(np.max(self.metric_hist)))
+                    )
+                else:
+                    results.append(
+                        'Best {}: {}/{}'.format(self.metric, np.argmin(self.metric_hist) + 1, self.fmt.format(np.min(self.metric_hist)))
+                    )
+            self.progress_bar.set_postfix_str(', '.join(results))
+
+try:
+    import xgboost as xgb
+    class XGBFitProgressbar(xgb.callback.TrainingCallback):
+        def __init__(self, n_estimators, precision=5, start_position=0, metric=None, greater_is_better=True):
+            self.start_position = start_position
+            self.n_estimators = n_estimators
+            self.fmt = '{:.' + str(precision) + 'f}'
+            self.metric = metric
+            self.metric_hist = []
+            self.greater_is_better = greater_is_better
+            self.progress_bar = None
+    
+        def before_training(self, model):
+            self.progress_bar = tqdm(total=self.n_estimators, desc='Round', position=self.start_position)
+            return model
+    
+        def after_iteration(self, model, epoch, evals_log):
+            # 진행 상태를 업데이트
+            self.progress_bar.update(1)
+    
+            results = []
+            for data_name, metrics in evals_log.items():
+                for eval_name, eval_results in metrics.items():
+                    result = eval_results[-1]
+                    results.append(f'{data_name}_{eval_name}:{self.fmt.format(result)}')
+                    if self.metric == f'{data_name}_{eval_name}':
+                        self.metric_hist.append(result)
+    
+            if self.metric is not None and self.metric_hist:
+                if self.greater_is_better:
+                    best_round = np.argmax(self.metric_hist) + 1
+                    best_value = np.max(self.metric_hist)
+                else:
+                    best_round = np.argmin(self.metric_hist) + 1
+                    best_value = np.min(self.metric_hist)
+    
+                results.append(f'Best {self.metric}: {best_round}/{self.fmt.format(best_value)}')
+    
+            self.progress_bar.set_postfix_str(', '.join(results))
+    
+            # False를 반환하면 학습이 계속 진행됨
+            return False
+    
+        def after_training(self, model):
+            # 학습이 종료되면 진행바를 닫음
+            self.progress_bar.close()
+            return model
+except:
+    pass
+
+class CatBoostFitProgressbar:
+    def __init__(self, n_estimators, precision=5, start_position=0, metric=None, greater_is_better=True):
+        self.start_position = start_position
+        self.n_estimators = n_estimators
+        self.fmt = '{:.' + str(precision) + 'f}'
+        self.metric = metric
+        self.metric_hist = list()
+        self.greater_is_better = greater_is_better
+        self.progress_bar = None
+
+        
+
+    def after_iteration(self, info):
+        if self.progress_bar is None:
+            self.progress_bar = tqdm(total=self.n_estimators, desc='Round', position=self.start_position)
+
+        self.progress_bar.update(1)
+        results = list()
+        if info.metrics is not None:
+            for k, v in info.metrics.items():
+                results_2 = list()
+                for k2, v2 in v.items():
+                    results_2.append('{}: {}'.format(k2, self.fmt.format(v2[-1])))
+                    if self.metric == f'{k}_{k2}':
+                        self.metric_hist.append(v2[-1])
+                results.append('{}: {}'.format(k, ', '.join(results_2)))
+
+        if self.metric is not None and self.metric_hist and len(self.metric_hist) > 0:
+            if self.greater_is_better:
+                best_round = np.argmax(self.metric_hist) + 1
+                best_value = np.max(self.metric_hist)
+            else:
+                best_round = np.argmin(self.metric_hist) + 1
+                best_value = np.min(self.metric_hist)
+
+            results.append(f'Best {self.metric}: {best_round}/{self.fmt.format(best_value)}')
+        
+        self.progress_bar.set_postfix_str(', '.join(results))
+        return True
+
+    def after_train(self):
+        if self.progress_bar is not None:
+            self.progress_bar.close()
 
 def train_model(model, model_params, df_train, X, y, valid_splitter=None, preprocessor=None, fit_params={}, valid_config_proc = None, target_func=None):
     """
