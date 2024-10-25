@@ -94,27 +94,28 @@ def get_type_vars(var_list):
             else:
                 s_list.append(
                     pd.Series(
-                        [src, s.name, desc, s.isna().sum()] + s.agg(['nunique', 'count']).tolist(),
+                        [src, s.name, desc, t, s.isna().sum()] + s.agg(['nunique', 'count']).tolist(),
                         index=['src', 'var', 'Description', 'dtype', 'na', 'n_unique', 'count']
                     )
                 )
         else:
             s_list.append(
                 pd.Series(
-                    [src, s.name, desc, s.sum()] + s.agg(['nunique', 'count', 'min', 'max']).tolist(),
+                    [src, s.name, desc, s.isna().sum(), t] + s.agg(['nunique', 'count', 'min', 'max']).tolist(),
                     index=['src', 'var', 'Description', 'na', 'dtype', 'n_unique', 'count', 'min', 'max']
                 )
             )
     df = pd.DataFrame(s_list).set_index('var')
-    for i, mn, mx in [
-        ('f32', np.finfo(np.float32).min, np.finfo(np.float32).max),
-        ('i32', np.iinfo(np.int32).min, np.iinfo(np.int32).max),
-        ('i16', np.iinfo(np.int16).min, np.iinfo(np.int16).max),
-        ('i8', np.iinfo(np.int8).min, np.iinfo(np.int8).max)
-    ]:
-        df[i] = df.loc[df['dtype'] != 'String'].apply(
-            lambda x: (x['min'] >= mn) and (x['max'] <= mx), axis=1
-        )
+    if 'min' in df.columns:
+        for i, mn, mx in [
+            ('f32', np.finfo(np.float32).min, np.finfo(np.float32).max),
+            ('i32', np.iinfo(np.int32).min, np.iinfo(np.int32).max),
+            ('i16', np.iinfo(np.int16).min, np.iinfo(np.int16).max),
+            ('i8', np.iinfo(np.int8).min, np.iinfo(np.int8).max)
+        ]:
+            df[i] = df.loc[df['dtype'] != 'String'].apply(
+                lambda x: (x['min'] >= mn) and (x['max'] <= mx), axis=1
+            )
     return df
 
 def merge_type_df(dfs):

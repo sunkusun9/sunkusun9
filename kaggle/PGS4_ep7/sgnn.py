@@ -2,6 +2,7 @@ from functools import partial
 
 import pandas as pd
 import numpy as np
+import gc
 
 import tensorflow  as tf
 from tensorflow.keras.callbacks import Callback
@@ -63,11 +64,18 @@ def fit_tf_model_to_Y(
         callbacks=cb
     )
     tf.keras.backend.clear_session()
+    del ds_train
+    if ds_eval is not None:
+        del ds_eval
+    gc.collect()
     return history.history
 
 def predict_tf_model(model, X, to_tf_dataset, batch_size=64, **argv):
     ds = to_tf_dataset(X).batch(batch_size)
-    return model.predict(ds, verbose=argv.get('verbose', 0))
+    prd =  model.predict(ds, verbose=argv.get('verbose', 0))
+    del ds
+    gc.collect()
+    return prd
 
 
 def create_model(inp, o, config, embedding = None, 
@@ -236,17 +244,20 @@ class FitProgressBar(Callback):
         self.start_position = 0
         self.step_progress_bar = None
         self.prog_level = prog_level
+    
+    def __repr__(self):
+        return 'FitProgressBar'
         
     def on_train_begin(self, logs=None):
         self.epochs = self.params['epochs']
-        self.epoch_progress_bar = tqdm(total=self.epochs, desc='Epoch', position=self.start_position)
+        self.epoch_progress_bar = tqdm(total=self.epochs, desc='Epoch', position=self.start_position, leave=False)
         self.step_progress_bar = None
 
     def on_epoch_begin(self, epoch, logs=None):
         self.current_epoch = epoch + 1
         self.steps = self.params['steps']
         if self.step_progress_bar is None and self.prog_level >= 1:
-            self.step_progress_bar = tqdm(total=self.steps, desc=f"Step", position=self.start_position + 1)
+            self.step_progress_bar = tqdm(total=self.steps, desc=f"Step", position=self.start_position + 1, leave=False)
         elif self.step_progress_bar is not None:
             self.step_progress_bar.reset()
 
@@ -279,7 +290,11 @@ class FitProgressBar(Callback):
     def on_train_end(self, logs = None):
         if self.step_progress_bar is not None:
             self.step_progress_bar.close()
+            del self.step_progress_bar
+            self.step_progress_bar = None
         self.epoch_progress_bar.close()
+        del self.epoch_progress_bar
+        self.epoch_progress_bar = None
 
 class NNEstimator(BaseEstimator):
     def __init__(
