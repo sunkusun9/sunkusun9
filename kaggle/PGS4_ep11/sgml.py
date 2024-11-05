@@ -437,17 +437,14 @@ def cv_model(sp, model, model_params, df, X, y, predict_func, eval_metric, retur
             df_cv_train = train_data_proc(df_cv_train)
         m, train_result = train_model(model, model_params, df_cv_train, X, y, preprocessor=preprocessor, target_func=target_func, **train_params)
         if target_invfunc is None:
+            valid_prds.append(predict_func(m, df_valid, X))
             if return_train_scores:
                 train_metrics.append(eval_metric(df_cv_train, predict_func(m, df_cv_train, X)))
-            del df_cv_train
-            valid_prds.append(predict_func(m, df_valid, X))
         else:
+            valid_prds.append(target_invfunc(df_valid, predict_func(m, df_valid, X)))
             if return_train_scores:
                 train_metrics.append(eval_metric(df_cv_train, target_invfunc(df_cv_train, predict_func(m, df_cv_train, X))))
-            del df_cv_train
-            valid_prds.append(target_invfunc(df_valid, predict_func(m, df_valid, X)))
         valid_metrics.append(eval_metric(df_valid, valid_prds[-1]))
-        del df_valid
         if result_proc is not None:
             if preprocessor is None:
                 train_result = result_proc(m, train_result)
