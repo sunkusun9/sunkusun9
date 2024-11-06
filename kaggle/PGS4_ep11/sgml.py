@@ -25,8 +25,11 @@ def pass_learning_result(m, train_result, preprocessor=None):
     else:
         return make_pipeline(preprocessor, m), train_result
 
-def m_learning_result(m, train_result):
-    return m, train_result
+def m_learning_result(m, train_result, preprocessor=None):
+    if preprocessor is None:
+        return m, train_result
+    else:
+        return m, train_result, preprocessor
 
 def lgb_learning_result(m, train_result, preprocessor=None):
     """
@@ -694,20 +697,25 @@ class SGStacking:
         result_ = self.model_result[model_name]
         return result_['best_result'][0]
     
-    def eval_model(self, model_name, model, model_params, X,  
-                   preprocessor=None, result_proc=None, train_data_proc=None, train_params={}, target_func=None, target_invfunc=None, rerun=False, progress_callback=None):
+    def eval_model(
+            self, model_name, model, hyper_params, X, control_params={},  
+                preprocessor=None, result_proc=None, train_data_proc=None, hyper_params_in_fit={}, control_params_in_fit={}, 
+                target_func=None, target_invfunc=None, rerun=False, progress_callback=None
+        ):
         """
         Evaluate a base model with cross-validation and store the results.
 
         Parameters:
             model_name (str): Name of the model.
             model (Class): Model class.
-            model_params (dict): Hyperparameters for the model.
+            hyper_params (dict): Hyperparameters for the model.
+            control_params (dict): Control Parameter for the model.
             X (list): List of feature names.
             preprocessor (optional): Preprocessor object.
             result_proc (function, optional): Function to process the training results.
             train_data_proc (function, optional): Function to process the training data.
-            train_params (dict, optional): Training parameters.
+            hyper_params_in_fit (dict, optional): Hyper params in fit.
+            control_params_in_fit (dict, optional): Control params in fit.
             target_func (function, optional): Target transformation function.
             target_invfunc (function, optional): Inverse target transformation function.
             rerun (bool, optional): Whether to rerun the evaluation.
@@ -728,15 +736,19 @@ class SGStacking:
         >>> )
         """
         if not rerun:
-            result = self.get_result(model_name, model, preprocessor, model_params, X, target_func)
+            result = self.get_result(model_name, model, preprocessor, {**hyper_params, **hyper_params_in_fit}, X, target_func)
             if result != None:
                 return result, None
+        model_params = {**hyper_params, **control_params}
+        train_params = {**hyper_params_in_fit, **control_params_in_fit}
         train_metrics, valid_metrics, s_prd, model_result_cv = \
             cv_model(
-                self.sp, model, model_params, self.df_train, X, self.target, self.predict_func, self.eval_metric, groups=self.groups, return_train_scores = self.return_train_scores,
+                self.sp, model, model_params, self.df_train, X, self.target, self.predict_func, self.eval_metric, 
+                groups=self.groups, return_train_scores = self.return_train_scores,
                 preprocessor=preprocessor, result_proc=result_proc, train_data_proc=train_data_proc, train_params=train_params, sp_y=self.sp_y,
                 target_func=target_func, target_invfunc=target_invfunc, progress_callback=progress_callback
             )
+        
         train_info = {
             'result_proc': result_proc, 'train_data_proc': train_data_proc, 'train_params': train_params
         }

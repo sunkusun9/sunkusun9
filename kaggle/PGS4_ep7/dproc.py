@@ -57,7 +57,6 @@ def get_type_vars(var_list):
             - src (str): The source or origin of the variable.
             - s (pd.Series): The pandas Series representing the variable.
             - desc (str): A description of the variable (unused in the function).
-            - t (str): The data type of the variable (e.g., 'Categorical', 'String', etc.).
 
     Returns:
         pd.DataFrame: A pandas DataFrame indexed by variable name with the following columns:
@@ -82,8 +81,9 @@ def get_type_vars(var_list):
         # Returns a DataFrame with statistics on the variables, including dtype compatibility.
     """
     s_list = list()
-    for src, s, desc, t in var_list:
-        if t == 'Categorical':
+    for src, s, desc in var_list:
+        if str(s.dtype) == 'category':
+            t = 'Categorical'
             if s.dtype.ordered:
                 s_list.append(
                     pd.Series(
@@ -99,6 +99,11 @@ def get_type_vars(var_list):
                     )
                 )
         else:
+            t = str(s.dtype)
+            if t == 'str':
+                t = 'String'
+            else:
+                t = t[:1].upper() + t[1:]
             s_list.append(
                 pd.Series(
                     [src, s.name, desc, s.isna().sum(), t] + s.agg(['nunique', 'count', 'min', 'max']).tolist(),
