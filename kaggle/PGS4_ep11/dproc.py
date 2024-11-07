@@ -370,7 +370,7 @@ def combine_cat(df, delimiter=''):
     return pd.Series(
         pd.Categorical.from_codes(
             df.apply(lambda x: x.cat.codes).dot(df.nunique().shift(1).fillna(1).astype('int').cumprod()), 
-            [delimiter.join(i) for i in product(*df.apply(lambda x: x.cat.categories.astype('str').tolist(), result_type='reduce'))]
+            [delimiter.join(i[::-1]) for i in product(*df[df.columns[::-1]].apply(lambda x: x.cat.categories.astype('str').tolist(), result_type='reduce'))]
         ), index=df.index
     )
 
