@@ -86,21 +86,21 @@ def get_type_vars(var_list):
         # Returns a DataFrame with statistics on the variables, including dtype compatibility.
     """
     s_list = list()
-    for src, s, desc in var_list:
+    for src, proc, s, desc in var_list:
         if str(s.dtype) == 'category':
             t = 'Categorical'
             if s.dtype.ordered:
                 s_list.append(
                     pd.Series(
-                        [src, s.name, desc, t, s.isna().sum()] + s.agg(['nunique', 'count', 'min', 'max']).tolist(),
-                        index=['src', 'var', 'Description', 'dtype', 'na', 'n_unique', 'count', 'min', 'max']
+                        [src, s.name, proc, desc, t, s.isna().sum()] + s.agg(['nunique', 'count', 'min', 'max']).tolist(),
+                        index=['src', 'var', 'processor', 'Description', 'dtype', 'na', 'n_unique', 'count', 'min', 'max']
                     )
                 )
             else:
                 s_list.append(
                     pd.Series(
-                        [src, s.name, desc, t, s.isna().sum()] + s.agg(['nunique', 'count']).tolist(),
-                        index=['src', 'var', 'Description', 'dtype', 'na', 'n_unique', 'count']
+                        [src, s.name, proc, desc, t, s.isna().sum()] + s.agg(['nunique', 'count']).tolist(),
+                        index=['src', 'var', 'processor', 'Description', 'dtype', 'na', 'n_unique', 'count']
                     )
                 )
         else:
@@ -111,8 +111,8 @@ def get_type_vars(var_list):
                 t = t[:1].upper() + t[1:]
             s_list.append(
                 pd.Series(
-                    [src, s.name, desc, s.isna().sum(), t] + s.agg(['nunique', 'count', 'min', 'max']).tolist(),
-                    index=['src', 'var', 'Description', 'na', 'dtype', 'n_unique', 'count', 'min', 'max']
+                    [src, s.name, proc, desc, s.isna().sum(), t] + s.agg(['nunique', 'count', 'min', 'max']).tolist(),
+                    index=['src', 'var', 'processor', 'Description', 'na', 'dtype', 'n_unique', 'count', 'min', 'max']
                 )
             )
     df = pd.DataFrame(s_list).set_index('var')
@@ -346,15 +346,36 @@ def apply_pd(df, proc_list, src=None):
         var_list.append(proc(df))
         if src is not None:
             if type(var_list[-1]) == pd.Series:
-                type_list.append([src, var_list[-1], desc])
+                type_list.append([src, proc, var_list[-1], desc])
             else:
                 for i in var_list[-1].columns:
-                    type_list.append([src, var_list[-1][i], desc.get(i, '')])
+                    type_list.append([src, proc, var_list[-1][i], desc.get(i, '')])
     if src is not None:
         return pd.concat(var_list, axis=1), get_type_vars(type_list)
     return pd.concat(var_list, axis=1)
 
-
+def apply_pd_procs(df, s_procs):
+    nq = [(k, v) for k, v in s_procs.items()]
+    while len(nq) > 0:
+        steps = list()
+        success = list()
+        q = nq.copy()
+        nq = list()
+        proccessed = list()
+        while (len(q) > 0):
+            p = q.pop()
+            try:
+                proccessed.append(p[1](df))
+                success.append(p)
+            except Exception as e:
+                nq.append(p)
+        if len(proccessed) > 0:
+            df = join_and_assign(df, pd.concat(proccessed, axis=1))
+            steps.append(success)
+        else:
+            break
+    return df, nq
+    
 def combine_cat(df, delimiter=''):
     """
     Combines multiple categorical columns in a DataFrame into a single categorical variable, in efficient way. 
@@ -417,9 +438,9 @@ def replace_cat(s, rule):
         else:
             d[c] = len(code_replace)
             code_replace[new_cat] = len(code_replace)
-    return pd.Categorical.from_codes(
+    return pd.Series(pd.Categorical.from_codes(
             s.cat.codes.map(d), list(code_replace.keys()), ordered=s.cat.ordered
-        )
+        ), index=s.index)
 
 def rearrange_cat(s_cat, cat_type, repl_rule):
     """

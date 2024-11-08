@@ -25,13 +25,10 @@ def pass_learning_result(m, train_result, preprocessor=None):
     else:
         return make_pipeline(preprocessor, m), train_result
 
-def m_learning_result(m, train_result, preprocessor=None):
-    if preprocessor is None:
-        return m, train_result
-    else:
-        return m, train_result, preprocessor
+def m_learning_result(train_result):
+    return train_result
 
-def lgb_learning_result(m, train_result, preprocessor=None):
+def lgb_learning_result(train_result):
     """
     Process LightGBM model results to extract evaluation metrics and feature importances.
 
@@ -53,19 +50,17 @@ def lgb_learning_result(m, train_result, preprocessor=None):
             - pd.Series: A Series of feature importances sorted in ascending order, indexed by feature names.
             - dict: The original `train_result` dictionary.
     """
-    return (
-        pd.concat([
+    return {
+        'valid_result': pd.concat([
             pd.DataFrame(
-                m.evals_result_[i]
-            ).rename(columns=lambda x: (i, x)) for i in m.evals_result_.keys()
+                train_result['model'].evals_result_[i]
+            ).rename(columns=lambda x: (i, x)) for i in train_result['model'].evals_result_.keys()
         ], axis=1).pipe(
             lambda x: x.reindex(columns = pd.MultiIndex.from_tuples(x.columns.tolist(), names=['set', 'metric'])).swaplevel(axis=1)
-        ) if len(m.evals_result_) > 0 else None, 
-        pd.Series(
-            m.feature_importances_, index=train_result['variables']
-        ).sort_values(),
-        train_result
-    )
+        ) if len(train_result['model'].evals_result_) > 0 else None, 
+        'feature_importance': pd.Series(train_result['model'].feature_importances_, index=train_result['variables']).sort_values(),
+        **{k: v for k, v in train_result.items() if k != 'model'}
+    }
 
 def xgb_learning_result(m, train_result, preprocessor=None):
     return (
@@ -274,8 +269,8 @@ def train_model(model, model_params, df_train, X, y, valid_splitter=None, prepro
         valid_config_proc: function
             validation configuration function
     Returns
-        object, dict
-        model instance, train result
+        dict
+        train_resu;t
     Examples
     >>> X_cont =['Diameter', 'Whole weight.2', 'Whole weight.1', 'Shell weight', 'Length', 'Height_n', 'Whole weight']
     >>> X_cat = ['Sex']
@@ -330,9 +325,10 @@ def train_model(model, model_params, df_train, X, y, valid_splitter=None, prepro
     if df_valid is not None:
         del X_valid, y_valid, df_valid
     gc.collect()
+    result['model'] = m
     if preprocessor is not None:
-        m = make_pipeline(preprocessor, m)
-    return m, result
+        result['preprocessor'] = preprocessor
+    return result
 
 class BaseCallBack:
     def start(self, n_splits):
@@ -367,7 +363,7 @@ class ProgressCallBack(BaseCallBack):
     def end(self):
         self.progress_bar.close()
 
-def cv_model(sp, model, model_params, df, X, y, predict_func, eval_metric, return_train_scores = True,
+def cv_model(sp, model, model_params, df, X, y, predict_func, eval_func, return_train_scores = True,
             preprocessor=None, result_proc=None, train_data_proc=None, train_params={}, sp_y=None, groups=None, 
             target_func=None, target_invfunc=None, progress_callback=None):
     """
@@ -387,8 +383,8 @@ def cv_model(sp, model, model_params, df, X, y, predict_func, eval_metric, retur
             target variable
         predict_func: function
             prediction function
-        eval_metric: function
-            score functiongb_valid_config
+        eval_func: function
+            evaluation function
         return_train_scores: bool
             return train scores
         preprocessor: sklearn.preprocessing. 
@@ -410,13 +406,13 @@ def cv_model(sp, model, model_params, df, X, y, predict_func, eval_metric, retur
     >>> X_all = X_cont + X_cat
     >>> def predict(m, df_valid, X):
     >>>     return pd.Series(m.predict(df_valid[X]), index=df_valid.index)
-    >>> def eval_metric(y_true, prds):
+    >>> def eval_func(y_true, prds):
     >>>     return mean_squared_error(y_true.sort_index(), prds.sort_index()) ** 0.5
     >>> def gb_valid_config(train_set, valid_set):
     >>>     return {}, {'eval_set': [train_set, valid_set] if valid_set is not None else [train_set]}
     >>> cv_model(StratifiedKFold(n_splits=5, random_state=123, shuffle=True), 
-    >>>          lgb.LGBMRegressor, {'verbose': -1}, df_train_sp, X_all, 'target',
-    >>>         predict_func=predict, eval_metric = eval_metric,
+    >>>         lgb.LGBMRegressor, {'verbose': -1}, df_train_sp, X_all, 'target',
+    >>>         predict_func=predict, eval_func = eval_func,
     >>>         train_params={
     >>>             'valid_splitter': lambda x: train_test_split(x, train_size=0.9, stratify=x['Rings'], random_state=123),
     >>>             'fit_params': {'categorical_feature': ['Sex'], 'callbacks': [lgb.early_stopping(5, verbose=False)]},
@@ -424,11 +420,11 @@ def cv_model(sp, model, model_params, df, X, y, predict_func, eval_metric, retur
     >>>         }, sp_y = 'Rings'
     >>> )
     """
-    train_metrics, valid_metrics = list(), list()
+    train_evals, valid_evals = list(), list()
     valid_prds = list()
     if sp_y is None:
         sp_y = y
-    model_result_cv = list()
+    model_result = list()
     sp_params = {'X': df[X], 'y': df[sp_y], 'groups': None if groups is None else df[groups]}
     if progress_callback is None:
         progress_callback = BaseCallBack()
@@ -438,26 +434,29 @@ def cv_model(sp, model, model_params, df, X, y, predict_func, eval_metric, retur
         df_cv_train, df_valid = df.iloc[train_idx], df.iloc[valid_idx]
         if train_data_proc != None:
             df_cv_train = train_data_proc(df_cv_train)
-        m, train_result = train_model(model, model_params, df_cv_train, X, y, preprocessor=preprocessor, target_func=target_func, **train_params)
-        if target_invfunc is None:
-            valid_prds.append(predict_func(m, df_valid, X))
-            if return_train_scores:
-                train_metrics.append(eval_metric(df_cv_train, predict_func(m, df_cv_train, X)))
+        result = train_model(model, model_params, df_cv_train, X, y, preprocessor=preprocessor, target_func=target_func, **train_params)
+        if 'preprocessor' in result:
+            m = make_pipeline(result['preprocessor'], result['model'])
         else:
-            valid_prds.append(target_invfunc(df_valid, predict_func(m, df_valid, X)))
-            if return_train_scores:
-                train_metrics.append(eval_metric(df_cv_train, target_invfunc(df_cv_train, predict_func(m, df_cv_train, X))))
-        valid_metrics.append(eval_metric(df_valid, valid_prds[-1]))
+            m = result['model']
+        if target_invfunc is None:
+            target_invfunc = lambda x: x
+        valid_prds.append(target_invfunc(predict_func(m, df_valid, X)))
+        if return_train_scores:
+            train_evals.append(
+                eval_func(df_cv_train, target_invfunc(predict_func(m, df_cv_train, X)))
+            )
+        del m
+        valid_evals.append(eval_func(df_valid, valid_prds[-1]))
         if result_proc is not None:
-            if preprocessor is None:
-                train_result = result_proc(m, train_result)
-            else:
-                train_result = result_proc(m[-1], train_result, m[0])
-        model_result_cv.append(train_result)
-        progress_callback.end_fold(fold, train_metrics, valid_metrics, model_result_cv)
+            model_result.append(result_proc(result))
+        progress_callback.end_fold(fold, train_evals, valid_evals, model_result)
     s_prd = pd.concat(valid_prds, axis=0)
     progress_callback.end()
-    return train_metrics, valid_metrics, s_prd, model_result_cv
+    ret = {'valid_evals': valid_evals, 'eval_prd': s_prd, 'model_result': model_result}
+    if return_train_scores:
+        ret['train_evals'] = train_evals
+    return ret
 
 class SGStacking:
     """
@@ -468,13 +467,13 @@ class SGStacking:
         target (str): Target column name.
         sp (Splitter): sklearn compatible splitter object.
         predict_func (function): Function to extract predictions from a model.
-        eval_metric (function): Evaluation metric function.
+        eval_func (function): Evaluation metric function.
         greater_better (bool): Whether greater evaluation metric values are better.
         sp_y (str): Column name for target variable in the splitter, default is the target.
         groups (Optional): Groups for the splitter, if any.
         return_train_scores (bool): Whether to return training scores or not.
     """
-    def __init__(self, df_train, target, sp, predict_func, eval_metric, greater_better=True, sp_y=None, groups=None, return_train_scores = True):
+    def __init__(self, df_train, target, sp, predict_func, eval_func, greater_better=True, sp_y=None, groups=None, return_train_scores = True):
         """
         Initialize the SGStacking class.
 
@@ -483,7 +482,7 @@ class SGStacking:
             target (str): Target column name.
             sp (Splitter): sklearn compatible splitter object.
             predict_func (function): Function to extract predictions from a model.
-            eval_metric (function): Evaluation metric function.
+            eval_func (function): Evaluation function.
             greater_better (bool): Whether greater evaluation metric values are better.
             sp_y (str, optional): Column name for target variable in the splitter, default is the target.
             groups (Optional): Groups for the splitter, if any.
@@ -492,15 +491,15 @@ class SGStacking:
         >>> cv5 = StratifiedKFold(n_splits=5, random_state=123, shuffle=True)
         >>> def predict(m, df_valid, X):
         >>>     return pd.Series(m.predict(df_valid[X]), index=df_valid.index)
-        >>> def eval_metric(y_true, prds):
-        >>>     return mean_squared_error(y_true.sort_index(), prds.sort_index()) ** 0.5
-        >>> stk = SGStacking(df_train, 'target', sp=cv5, predict_func=predict, eval_metric=eval_metric,  greater_better=False)
+        >>> def eval_func(df_valid, prds):
+        >>>     return mean_squared_error(df_valid['target'].sort_index(), prds.sort_index()) ** 0.5
+        >>> stk = SGStacking(df_train, 'target', sp=cv5, predict_func=predict, eval_func=eval_func,  greater_better=False)
         """
         self.df_train = df_train
         self.target = target
         self.sp = sp
         self.predict_func = predict_func
-        self.eval_metric = eval_metric
+        self.eval_func = eval_func
         self.model_result = {}
         self.selected_models = {}
         self.greater_better = greater_better
@@ -589,31 +588,6 @@ class SGStacking:
             if model_name in self.selected_models:
                 del self.selected_models[model_name]
         result_['metric'].append(metric)
-
-    def append_vars(self, pd_vars):
-        """
-        Append additional variables to the training dataset.
-
-        Parameters:
-            pd_vars (pd.DataFrame or pd.Series): Variables to append.
-
-        Raises:
-            Exception: If the indices of `pd_vars` do not match the existing training data indices.
-        """
-        if (pd_vars.index == self.df_train.index).all():
-            if type(pd_vars) == pd.Series and pd_vars.name in self.df_train.columns:
-                self.df_train[pd_vars.name] = pd_vars
-                return
-            else:
-                d_cols = [i for i in pd_vars.columns if i in self.df_train.columns]
-                if len(d_cols) > 0:
-                    for i in d_cols:
-                        self.df_train[i] = pd_vars.pop(i)
-                if len(pd_vars.columns) == 0:
-                    return
-            self.df_train = pd.concat([self.df_train, pd_vars], axis=1)
-        else:
-            raise Exception("pd_vars should have same index with existing train data")
     
     def compact_result(self, model_name):
         """
@@ -743,7 +717,7 @@ class SGStacking:
         train_params = {**hyper_params_in_fit, **control_params_in_fit}
         train_metrics, valid_metrics, s_prd, model_result_cv = \
             cv_model(
-                self.sp, model, model_params, self.df_train, X, self.target, self.predict_func, self.eval_metric, 
+                self.sp, model, model_params, self.df_train, X, self.target, self.predict_func, self.eval_func, 
                 groups=self.groups, return_train_scores = self.return_train_scores,
                 preprocessor=preprocessor, result_proc=result_proc, train_data_proc=train_data_proc, train_params=train_params, sp_y=self.sp_y,
                 target_func=target_func, target_invfunc=target_invfunc, progress_callback=progress_callback
@@ -790,7 +764,7 @@ class SGStacking:
         """
         train_metrics, valid_metrics, s_prd, model_result_cv = \
             cv_model(
-                sp, model, model_params, self.df_train, X, self.target, self.predict_func, self.eval_metric, return_train_scores = self.return_train_scores,
+                sp, model, model_params, self.df_train, X, self.target, self.predict_func, self.eval_func, return_train_scores = self.return_train_scores,
                 preprocessor=preprocessor, result_proc=result_proc, train_data_proc=train_data_proc, train_params=train_params, sp_y=self.sp_y,
                 target_func=target_func, target_invfunc=target_invfunc, progress_callback=None
             )
@@ -867,9 +841,9 @@ class SGStacking:
             df = train_data_proc(df)
         m, train_result = train_model(model, model_params, self.df_train, X, self.target, preprocessor=preprocessor, target_func=target_func, **train_params)
         if target_invfunc is None:
-            train_metric = self.eval_metric(self.df_train, self.predict_func(m, self.df_train, X))
+            train_metric = self.eval_func(self.df_train, self.predict_func(m, self.df_train, X))
         else:
-            train_metric = self.eval_metric(self.df_train, target_invfunc(self.df_train, self.predict_func(m, self.df_train, X)))
+            train_metric = self.eval_func(self.df_train, target_invfunc(self.df_train, self.predict_func(m, self.df_train, X)))
         if result_proc is not None:
             if preprocessor is None:
                 train_result = result_proc(m, train_result)
@@ -915,7 +889,7 @@ class SGStacking:
             self.df_train[vals]
         )
         train_metrics, valid_metrics, s_prd, model_result_cv = cv_model(
-            self.sp, model, model_params, df, model_names, self.target, self.predict_func, self.eval_metric, 
+            self.sp, model, model_params, df, model_names, self.target, self.predict_func, self.eval_func, 
             result_proc=result_proc, train_params=train_params, sp_y=self.sp_y
         )
         return train_metrics, valid_metrics, s_prd, model_result_cv
@@ -947,7 +921,7 @@ class SGStacking:
                 self.model_result[i]['best_result'][0].rename(i) for i in model_names
             ] + [self.df_train[self.target]], axis=1).sort_index()
         m, train_result = train_model(model, model_params, df, model_names, self.target, **train_params)
-        train_metric = self.eval_metric(df, self.predict_func(m, df, model_names))
+        train_metric = self.eval_func(df, self.predict_func(m, df, model_names))
         if result_proc is not None:
             train_result = result_proc(m, train_result)
         self.meta_model = m
@@ -1002,7 +976,7 @@ class SGStacking:
             'target': self.target,
             'splitter': self.sp,
             'predict_func': self.predict_func,
-            'eval_metric': self.eval_metric,
+            'eval_func': self.eval_func,
             'model_result': self.model_result,
             'selected_models': self.selected_models,
             'greater_better': self.greater_better,
@@ -1025,7 +999,7 @@ class SGStacking:
             model_contents = pkl.load(f)
         stk = SGStacking(
             model_contents['df_train'], model_contents['target'],
-            model_contents['splitter'], model_contents['predict_func'], model_contents['eval_metric'], model_contents['greater_better'],
+            model_contents['splitter'], model_contents['predict_func'], model_contents['eval_func'], model_contents['greater_better'],
             sp_y = model_contents['sp_y'],
             groups = model_contents['groups']
         )
