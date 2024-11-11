@@ -246,7 +246,7 @@ class CatBoostFitProgressbar:
             self.progress_bar = None
 
 
-def train_model(model, model_params, df_train, X, y, valid_splitter=None, preprocessor=None, fit_params={}, valid_config_proc = None, target_func=None):
+def train_model(model, model_params, df_train, X, y, valid_splitter=None, preprocessor=None, fit_params={}, valid_config_proc = None, target_func=None, **argv):
     """
     Train a model
     Parameters:
