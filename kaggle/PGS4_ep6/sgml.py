@@ -7,6 +7,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.model_selection import train_test_split
 
 import joblib
+import dill
 import pickle as pkl
 import numpy as np
 import pandas as pd
@@ -456,6 +457,8 @@ class ProgressCallBack(BaseCallBack):
         self.progress_bar.set_postfix_str(', '.join(results))
     def end(self):
         self.progress_bar.close()
+        del self.progress_bar
+        self.progress_bar = None
 
 def cv_model(sp, model, model_params, df, X, y, predict_func, score_func, return_train_scores = True,
             preprocessor=None, result_proc=None, train_data_proc=None, train_params={}, sp_y=None, groups=None, 
@@ -564,12 +567,12 @@ def train(df, hparam, config, adapter, **argv):
     train_params = hparam_.pop('train_params')
     return train_model(df_train=df, **hparam_, **config, **train_params), hparam_['X']
 
-def stack_cv(self, cv_list):
+def stack_cv(cv_list, y):
     return pd.concat([
         i.cv_best_['prd'].rename(i.name) for i in cv_list
-    ], axis=1, join='inner')
+    ] + [y], axis=1, join='inner')
 
-def stack_prd(self, df, config):
+def stack_prd(df, config):
     return pd.concat([
         i.get_predictor()(df).rename(i.name) for i in cv_list
     ], axis=1)
@@ -589,7 +592,7 @@ class SklearnAdapter(BaseAdapter):
         X, _, transformers = get_transformers(hparams)
         return {
             'model': self.model,
-            'model_params': hparams['model_params'],
+            'model_params': hparams.get('model_params', {}),
             'X': X,
             'preprocessor': ColumnTransformer(transformers) if len(transformers) > 0 else None,
         }
@@ -639,7 +642,6 @@ class XGBAdapter():
                 validation_splitter = argv.get('validation_splitter')(validation_fraction)
         else:
             validation_splitter = None
-        print(transformers)
         return {
             'model': self.model, 
             'model_params': {
@@ -686,7 +688,7 @@ class CBAdapter():
         }
 
 class CVModel:
-    def __init__(self, path, name, sp, adapter, config):
+    def __init__(self, path, name, sp, config, adapter):
         self.path = path
         self.name = name
         self.sp = sp
@@ -701,6 +703,9 @@ class CVModel:
         }
         self.preprocessor_ = None
         self.model_ = None
+
+    def adhoc(self, df, sp, hparam):
+        return cv(df, sp, hparam, self.config, self.adapter)
 
     def cv(self, df, hparams, rerun=False):
         k = str(hparams)
@@ -718,6 +723,11 @@ class CVModel:
         self.save()
         return result
 
+    def get_best_result(self):
+        return self.cv_results_[
+            self.cv_best_['k']
+        ]
+    
     def train(self, df, rerun=False):
         if self.train_['k'] == self.cv_best_['k'] and not rerun:
             return self.train_['result']
@@ -760,8 +770,8 @@ class CVModel:
     
     def load(path, name):
         with open(os.path.join(path,  name + '.cv'), 'rb') as f:
-            obj = joblib.load(f)
-        cv_obj = CVModel(path, name, obj['sp'], obj['adapter'], obj['config'])
+            obj = dill.load(f)
+        cv_obj = CVModel(path, name, obj['sp'], obj['config'], obj['adapter'])
         cv_obj.cv_results_ = obj['cv_results_']
         cv_obj.cv_best_ = obj['cv_best_']
         cv_obj.train_ = obj['train_']
@@ -769,7 +779,7 @@ class CVModel:
 
     def save(self):
         with open(os.path.join(self.path,  self.name + '.cv'), 'wb') as f:
-            joblib.dump({
+            dill.dump({
                 'adapter': self.adapter,
                 'sp': self.sp,
                 'config': self.config,

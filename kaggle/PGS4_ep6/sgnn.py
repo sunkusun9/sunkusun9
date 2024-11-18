@@ -618,7 +618,7 @@ class NNAdapter():
             'preprocessor': ColumnTransformer(transformers) if len(transformers) > 0 else None,
             'train_params': {
                 'valid_splitter': validation_splitter,
-                'valid_config_proc': sgml.nn_valid_config,
+                'valid_config_proc': nn_valid_config,
                 'fit_params': {
                     'cb': [FitProgressBar(
                         metric=argv.get('prog_metric', None), greater_is_better=argv.get('prog_greater_is_better', True), 
@@ -626,6 +626,6 @@ class NNAdapter():
                     )]
                 }
             },
-            'result_proc': argv.get('result_proc', sgml.nn_learning_result),
+            'result_proc': argv.get('result_proc', nn_learning_result),
             'target_func': argv.get('target_func', self.target_func)
         }
