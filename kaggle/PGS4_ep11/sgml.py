@@ -2,7 +2,7 @@ from sklearn.base import clone
 from sklearn.compose import ColumnTransformer
 from sklearn.preprocessing import TargetEncoder, OrdinalEncoder, MinMaxScaler, StandardScaler, OneHotEncoder
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.decomposition import PCA
+from sklearn.decomposition import PCA, TruncatedSVD
 from sklearn.pipeline import make_pipeline
 from sklearn.model_selection import train_test_split
 
@@ -28,7 +28,7 @@ def get_X_from_transformer(transformers):
 
 def get_ohe_transformer(hparams):
     if 'X_ohe' in hparams:
-        return ('ohe', OneHotEncoder(drop=hparams.get('ohe_drop', None)), hparams['X_ohe'])
+        return ('ohe', OneHotEncoder(**hparams.get('ohe', {})), hparams['X_ohe'])
     return None
 
 def get_mm_transformer(hparams):
@@ -54,9 +54,23 @@ def get_lda_transformer(hparams):
     if len(lda_transformers) > 0:
         return (
             'lda', make_pipeline(
-                ColumnTransformer(lda_transformers), 
+                ColumnTransformer(lda_transformers) if len(lda_transformers) > 1 else lda_transformers[1], 
                 LinearDiscriminantAnalysis(**lda.get('hparams', {}))
             ), X_lda
+        )
+    return None
+
+def get_tsvd_transformer(hparams):
+    tsvd = hparams.get('tsvd', {})
+    if len(tsvd) == 0:
+        return None
+    X_tsvd, _, tsvd_transformers = get_transformers(tsvd)
+    if len(tsvd_transformers) > 0:
+        return (
+            'tsvd', make_pipeline(
+                ColumnTransformer(tsvd_transformers) if len(tsvd_transformers) > 1 else tsvd_transformers[1], 
+                TruncatedSVD(**tsvd.get('hparams', {}))
+            ), X_tsvd
         )
     return None
 
@@ -68,7 +82,7 @@ def get_pca_transformer(hparams):
     if len(pca_transformers) > 0:
         return (
             'pca', make_pipeline(
-                ColumnTransformer(pca_transformers), 
+                ColumnTransformer(pca_transformers) if len(pca_transformers) > 1 else pca_transformers[1], 
                 PCA(**pca.get('hparams', {}))
             ), X_pca
         )
@@ -78,7 +92,8 @@ def get_transformers(hparams):
     transformers = list()
     for proc in [
         get_mm_transformer, get_std_transformer, get_pca_transformer,
-        get_ohe_transformer, get_tgt_transformer, get_lda_transformer
+        get_ohe_transformer, get_tgt_transformer, get_lda_transformer,
+        get_tsvd_transformer
     ]:
         transformer = proc(hparams)
         if transformer is not None:
@@ -110,7 +125,7 @@ def get_cat_transformers_ohe(hparams):
     X, _, transformers = get_transformers(hparams)
     X_cat = hparams.get('X_cat', [])
     if len(X_cat) > 0:
-        transformers = [('cat', OneHotEncoder(drop=hparams.get('ohe_drop', None)), X_cat)] + transformers
+        transformers = [('cat', OneHotEncoder(**hparams.get('ohe', {})), X_cat)] + transformers
     return get_X_from_transformer(transformers), [], transformers
 
 def gb_valid_config(train_set, valid_set):
