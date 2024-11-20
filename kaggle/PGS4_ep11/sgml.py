@@ -128,6 +128,9 @@ def get_cat_transformers_ohe(hparams):
         transformers = [('cat', OneHotEncoder(**hparams.get('ohe', {})), X_cat)] + transformers
     return get_X_from_transformer(transformers), [], transformers
 
+def is_empty_transformer(transformers):
+    return transformers is None or len(transformers) == 0 or (len(transformers) == 1 and transformers[0][1] == 'passthrough')
+
 def gb_valid_config(train_set, valid_set):
     return {}, {'eval_set': [train_set, valid_set] if valid_set is not None else [train_set]}
 
@@ -579,7 +582,7 @@ def cv(df, sp, hparams, config, adapter, **argv):
 
 def train(df, hparam, config, adapter, **argv):
     hparam_ = adapter.adapt(hparam, is_train=True, **argv)
-    train_params = hparam_.pop('train_params')
+    train_params = hparam_.pop('train_params') if 'train_params' in hparam_ else {}
     return train_model(df_train=df, **hparam_, **config, **train_params), hparam_['X']
 
 def stack_cv(cv_list, y):
@@ -587,7 +590,7 @@ def stack_cv(cv_list, y):
         i.cv_best_['prd'].rename(i.name) for i in cv_list
     ] + [y], axis=1, join='inner')
 
-def stack_prd(df, config):
+def stack_prd(cv_list, df, config):
     return pd.concat([
         i.get_predictor()(df).rename(i.name) for i in cv_list
     ], axis=1)
@@ -609,7 +612,8 @@ class SklearnAdapter(BaseAdapter):
             'model': self.model,
             'model_params': hparams.get('model_params', {}),
             'X': X,
-            'preprocessor': ColumnTransformer(transformers) if len(transformers) > 0 else None,
+            'preprocessor': ColumnTransformer(transformers) if not is_empty_transformer(transformers) else None,
+            'result_proc': argv.get('result_proc', None)
         }
 
 class LGBMAdapter(BaseAdapter):
@@ -630,7 +634,7 @@ class LGBMAdapter(BaseAdapter):
             'model': self.model, 
             'model_params': {'verbose': -1, **hparams['model_params']},
             'X': X,
-            'preprocessor': ColumnTransformer(transformers) if len(transformers) > 0 else None,
+            'preprocessor': ColumnTransformer(transformers) if not is_empty_transformer(transformers) else None,
             'train_params': {
                 'fit_params': {
                     'categorical_feature': X_cat_feature,
@@ -642,7 +646,7 @@ class LGBMAdapter(BaseAdapter):
             'result_proc': argv.get('result_proc', lgb_learning_result),
         }
 
-class XGBAdapter():
+class XGBAdapter(BaseAdapter):
     def __init__(self, model, target_func=None):
         self.model = model
         self.target_func = target_func
@@ -663,7 +667,7 @@ class XGBAdapter():
                 **hparams['model_params'], 
                 'callbacks': [XGBFitProgressbar(n_estimators=hparams['model_params'].get('n_estimators', 100))]},
             'X': X,
-            'preprocessor': ColumnTransformer(transformers) if len(transformers) > 0 else None,
+            'preprocessor': ColumnTransformer(transformers) if not is_empty_transformer(transformers) else None,
             'train_params': {
                 'valid_splitter': validation_splitter,
                 'valid_config_proc': gb_valid_config,
@@ -673,7 +677,7 @@ class XGBAdapter():
             'target_func': argv.get('target_func', self.target_func)
         }
 
-class CBAdapter():
+class CBAdapter(BaseAdapter):
     def __init__(self, model):
         self.model = model
 
@@ -693,7 +697,7 @@ class CBAdapter():
                 **hparams['model_params'], 
                 'cat_features': X_cat_feature, 'verbose': False},
             'X': X,
-            'preprocessor': ColumnTransformer(transformers).set_output(transform='pandas') if len(transformers) > 0 else None,
+            'preprocessor': ColumnTransformer(transformers).set_output(transform='pandas') if not is_empty_transformer(transformers) else None,
             'train_params': {
                 'valid_splitter': validation_splitter,
                 'valid_config_proc': gb_valid_config,
@@ -722,11 +726,11 @@ class CVModel:
     def adhoc(self, df, sp, hparam):
         return cv(df, sp, hparam, self.config, self.adapter)
 
-    def cv(self, df, hparams, rerun=False):
+    def cv(self, df, hparams, rerun=False, **argv):
         k = str(hparams)
         if k in self.cv_results_ and not rerun:
             return self.cv_results_[k]
-        result = cv(df, self.sp, hparams, self.config, self.adapter)
+        result = cv(df, self.sp, hparams, self.config, self.adapter, **argv)
         score =  np.mean(result['valid_scores'])
         prd = result.pop('valid_prd')
         self.cv_results_[k] = result
@@ -743,10 +747,10 @@ class CVModel:
             self.cv_best_['k']
         ]
     
-    def train(self, df, rerun=False):
+    def train(self, df, rerun=False, **argv):
         if self.train_['k'] == self.cv_best_['k'] and not rerun:
             return self.train_['result']
-        result, X = train(df, self.cv_best_['hparams'], self.config, self.adapter)
+        result, X = train(df, self.cv_best_['hparams'], self.config, self.adapter, **argv)
         if 'preprocessor' in result:
             self.preprocessor_ = result.pop('preprocessor')
             joblib.dump(self.preprocessor_, os.path.join(self.path, self.name + '.pre'))
