@@ -211,12 +211,13 @@ def cb_learning_result(train_result):
     }
 
 class LGBMFitProgressbar:
-    def __init__(self, precision = 5, start_position=0, metric=None, greater_is_better = True):
+    def __init__(self, precision = 5, start_position=0, metric=None, greater_is_better = True, update_cycle = 10):
         self.start_position = start_position
         self.fmt = '{:.' + str(precision) + 'f}'
         self.metric = metric
         self.metric_hist = list()
         self.greater_is_better = greater_is_better
+        self.update_cycle = update_cycle
 
     def __repr__(self):
         return 'LGBMFitProgressbar'
@@ -224,11 +225,15 @@ class LGBMFitProgressbar:
     def _init(self, env):
         self.total_iteration = env.end_iteration - env.begin_iteration
         self.progress_bar = tqdm(total=self.total_iteration, desc='Round', position=self.start_position, leave=False)
+        self.prog = 0
 
     def __call__(self, env):
         if env.iteration == env.begin_iteration:
             self._init(env)
-        self.progress_bar.update(1)
+        self.prog += 1
+        if (self.prog % self.update_cycle) != 0:
+            return
+        self.progress_bar.update(self.update_cycle)
         if env.evaluation_result_list is not None:
             results = list()
             for item in env.evaluation_result_list:
@@ -257,7 +262,7 @@ class LGBMFitProgressbar:
 try:
     import xgboost as xgb
     class XGBFitProgressbar(xgb.callback.TrainingCallback):
-        def __init__(self, n_estimators, precision=5, start_position=0, metric=None, greater_is_better=True):
+        def __init__(self, n_estimators, precision=5, start_position=0, metric=None, greater_is_better=True, update_cycle=10):
             self.start_position = start_position
             self.n_estimators = n_estimators
             self.fmt = '{:.' + str(precision) + 'f}'
@@ -265,17 +270,22 @@ try:
             self.metric_hist = []
             self.greater_is_better = greater_is_better
             self.progress_bar = None
+            self.update_cycle = update_cycle
         
         def __repr__(self):
             return 'XGBFitProgressbar'
         
         def before_training(self, model):
             self.progress_bar = tqdm(total=self.n_estimators, desc='Round', position=self.start_position, leave=False)
+            self.prog = 0
             return model
     
         def after_iteration(self, model, epoch, evals_log):
             # 진행 상태를 업데이트
-            self.progress_bar.update(1)
+            self.prog += 1
+            if (self.prog % self.update_cycle) != 0:
+                return False
+            self.progress_bar.update(self.update_cycle)
     
             results = []
             for data_name, metrics in evals_log.items():
@@ -310,7 +320,7 @@ except:
     pass
 
 class CatBoostFitProgressbar:
-    def __init__(self, n_estimators, precision=5, start_position=0, metric=None, greater_is_better=True):
+    def __init__(self, n_estimators, precision=5, start_position=0, metric=None, greater_is_better=True, update_cycle = 10):
         self.start_position = start_position
         self.n_estimators = n_estimators
         self.fmt = '{:.' + str(precision) + 'f}'
@@ -318,6 +328,8 @@ class CatBoostFitProgressbar:
         self.metric_hist = list()
         self.greater_is_better = greater_is_better
         self.progress_bar = None
+        self.update_cycle = update_cycle
+        self.prog = 0
     
     def __repr__(self):
             return 'CatBoostFitProgressbar'
@@ -326,7 +338,10 @@ class CatBoostFitProgressbar:
         if self.progress_bar is None:
             self.progress_bar = tqdm(total=self.n_estimators, desc='Round', position=self.start_position, leave=False)
 
-        self.progress_bar.update(1)
+        self.prog += 1
+        if (self.prog % self.update_cycle) != 0:
+            return True
+        self.progress_bar.update(self.update_cycle)
         results = list()
         if info.metrics is not None:
             for k, v in info.metrics.items():
@@ -641,7 +656,7 @@ class LGBMAdapter(BaseAdapter):
                     'callbacks': [LGBMFitProgressbar()]
                 },
                 'valid_splitter': validation_splitter,
-                'valid_config_proc': gb_valid_config,
+                'valid_config_proc': gb_valid_config if validation_fraction > 0 or argv('validate_train', False) else None,
             },
             'result_proc': argv.get('result_proc', lgb_learning_result),
         }
@@ -665,12 +680,14 @@ class XGBAdapter(BaseAdapter):
             'model': self.model, 
             'model_params': {
                 **hparams['model_params'], 
-                'callbacks': [XGBFitProgressbar(n_estimators=hparams['model_params'].get('n_estimators', 100))]},
+                'callbacks': [XGBFitProgressbar(n_estimators=hparams['model_params'].get('n_estimators', 100))],
+                'device': argv.get('device', 'cpu')
+            },
             'X': X,
             'preprocessor': ColumnTransformer(transformers) if not is_empty_transformer(transformers) else None,
             'train_params': {
                 'valid_splitter': validation_splitter,
-                'valid_config_proc': gb_valid_config,
+                'valid_config_proc': gb_valid_config if validation_fraction > 0 or argv('validate_train', False) else None,
                 'fit_params': {'verbose': False}
             },
             'result_proc': argv.get('result_proc', xgb_learning_result),
@@ -691,17 +708,25 @@ class CBAdapter(BaseAdapter):
                 validation_splitter = argv.get('validation_splitter')(validation_fraction)
         else:
             validation_splitter = None
+        task_type = argv.get('task_type', None)
+        if task_type != 'GPU':
+            fit_params = {'callbacks': [CatBoostFitProgressbar(n_estimators=hparams['model_params'].get('n_estimators', 100))]}
+        else:
+            fit_params = {}
         return {
             'model': self.model, 
             'model_params': {
                 **hparams['model_params'], 
-                'cat_features': X_cat_feature, 'verbose': False},
+                'cat_features': X_cat_feature, 'verbose': False,
+                'task_type': task_type,
+                'devices': argv.get('devices', None)
+            },
             'X': X,
             'preprocessor': ColumnTransformer(transformers).set_output(transform='pandas') if not is_empty_transformer(transformers) else None,
             'train_params': {
                 'valid_splitter': validation_splitter,
-                'valid_config_proc': gb_valid_config,
-                'fit_params': {'callbacks': [CatBoostFitProgressbar(n_estimators=hparams['model_params'].get('n_estimators', 100))]}
+                'valid_config_proc': gb_valid_config if validation_fraction > 0 or argv('validate_train', False) else None,
+                'fit_params':  fit_params
             },
             'result_proc': argv.get('result_proc', cb_learning_result)
         }
@@ -723,8 +748,8 @@ class CVModel:
         self.preprocessor_ = None
         self.model_ = None
 
-    def adhoc(self, df, sp, hparam):
-        return cv(df, sp, hparam, self.config, self.adapter)
+    def adhoc(self, df, sp, hparam, **argv):
+        return cv(df, sp, hparam, self.config, self.adapter, **argv)
 
     def cv(self, df, hparams, rerun=False, **argv):
         k = str(hparams)
