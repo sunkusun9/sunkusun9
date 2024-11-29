@@ -175,7 +175,7 @@ def lgb_learning_result(train_result):
             ).rename(columns=lambda x: (i, x)) for i in train_result['model'].evals_result_.keys()
         ], axis=1).pipe(
             lambda x: x.reindex(columns = pd.MultiIndex.from_tuples(x.columns.tolist(), names=['set', 'metric'])).swaplevel(axis=1)
-        ) if len(train_result['model'].evals_result_) > 0 else None, 
+        ) if hasattr(train_result['model'], 'evals_result_') and len(train_result['model'].evals_result_) > 0 else None, 
         'feature_importance': pd.Series(train_result['model'].feature_importances_, index=train_result['variables']).sort_values(),
         **{k: v for k, v in train_result.items() if k != 'model'}
     }
@@ -188,7 +188,7 @@ def xgb_learning_result(train_result):
             ).rename(columns=lambda x: (i, x)) for i in train_result['model'].evals_result_.keys()
         ], axis=1).pipe(
             lambda x: x.reindex(columns = pd.MultiIndex.from_tuples(x.columns.tolist(), names=['set', 'metric'])).swaplevel(axis=1)
-        ), 
+        ) if hasattr(train_result['model'], 'evals_result_') else None, 
         'feature_importance': pd.Series(
             train_result['model'].feature_importances_, index=train_result['variables']
         ).sort_values(),
@@ -203,7 +203,7 @@ def cb_learning_result(train_result):
             ).rename(columns=lambda x: (i, x)) for i in train_result['model'].evals_result_.keys()
         ], axis=1).pipe(
             lambda x: x.reindex(columns = pd.MultiIndex.from_tuples(x.columns.tolist(), names=['set', 'metric'])).swaplevel(axis=1)
-        ), 
+        ) if hasattr(train_result['model'], 'evals_result_') else None, 
         'feature_importance': pd.Series(
             train_result['model'].feature_importances_, index=train_result['variables']
         ).sort_values(),
@@ -656,7 +656,7 @@ class LGBMAdapter(BaseAdapter):
                     'callbacks': [LGBMFitProgressbar()]
                 },
                 'valid_splitter': validation_splitter,
-                'valid_config_proc': gb_valid_config if validation_fraction > 0 or argv('validate_train', False) else None,
+                'valid_config_proc': gb_valid_config if validation_fraction > 0 or argv.get('validate_train', False) else None,
             },
             'result_proc': argv.get('result_proc', lgb_learning_result),
         }
@@ -687,7 +687,7 @@ class XGBAdapter(BaseAdapter):
             'preprocessor': ColumnTransformer(transformers) if not is_empty_transformer(transformers) else None,
             'train_params': {
                 'valid_splitter': validation_splitter,
-                'valid_config_proc': gb_valid_config if validation_fraction > 0 or argv('validate_train', False) else None,
+                'valid_config_proc': gb_valid_config if validation_fraction > 0 or argv.get('validate_train', False) else None,
                 'fit_params': {'verbose': False}
             },
             'result_proc': argv.get('result_proc', xgb_learning_result),
@@ -725,7 +725,7 @@ class CBAdapter(BaseAdapter):
             'preprocessor': ColumnTransformer(transformers).set_output(transform='pandas') if not is_empty_transformer(transformers) else None,
             'train_params': {
                 'valid_splitter': validation_splitter,
-                'valid_config_proc': gb_valid_config if validation_fraction > 0 or argv('validate_train', False) else None,
+                'valid_config_proc': gb_valid_config if validation_fraction > 0 or argv.get('validate_train', False) else None,
                 'fit_params':  fit_params
             },
             'result_proc': argv.get('result_proc', cb_learning_result)
