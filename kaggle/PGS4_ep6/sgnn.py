@@ -593,7 +593,7 @@ class NNRegressor(NNEstimator, RegressorMixin):
         return r2_score(y, self.predict(X))
 
 
-class NNAdapter():
+class NNAdapter(sgml.BaseAdapter):
     def __init__(self, model, to_tf_dataset=None, target_func=None):
         self.model = model
         self.to_tf_dataset = to_tf_dataset
