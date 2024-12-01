@@ -618,7 +618,7 @@ class NNAdapter(sgml.BaseAdapter):
             'preprocessor': ColumnTransformer(transformers) if len(transformers) > 0 else None,
             'train_params': {
                 'valid_splitter': validation_splitter,
-                'valid_config_proc': nn_valid_config,
+                'valid_config_proc': nn_valid_config if validation_fraction > 0 or argv.get('validate_train', False) else None,
                 'fit_params': {
                     'cb': [FitProgressBar(
                         metric=argv.get('prog_metric', None), greater_is_better=argv.get('prog_greater_is_better', True), 
