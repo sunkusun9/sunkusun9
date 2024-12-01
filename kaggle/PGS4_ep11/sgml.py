@@ -43,7 +43,7 @@ def get_std_transformer(hparams):
 
 def get_tgt_transformer(hparams):
     if 'X_tgt' in hparams:
-        return ('tgt', TargetEncoder(), hparams['X_tgt'])
+        return ('tgt', TargetEncoder(**hparams['tgt']), hparams['X_tgt'])
     return None
 
 def get_lda_transformer(hparams):
