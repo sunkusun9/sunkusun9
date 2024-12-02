@@ -1,9 +1,12 @@
+import os
 import pandas as pd
 import numpy as np
 import polars as pl
 import polars.selectors as cs
 from functools import partial
 from itertools import product
+from collections import OrderedDict
+import dill
 
 def get_type_df(df):
     """
@@ -24,16 +27,21 @@ def get_type_df(df):
         ('count', cs.all().count()),
         ('n_unique', cs.all().n_unique()),
     ]
-
     df_type = df.select(
         **{k: pl.struct(v) for k, v in stat}
     ).melt().unnest('value').rename({'variable': 'stat'})\
     .melt(id_vars='stat', variable_name='feature')
     if type(df_type) == pl.LazyFrame:
         df_type = df_type.collect()
+    if type(df) == pl.lazyframe.frame.LazyFrame:
+        dtypes = df.collect_schema().dtypes()
+        columns = df.collect_schema().names()
+    else:
+        dtypes = df.dtypes
+        columns = df.columns
     df_type = df_type.pivot(index='feature', columns='stat', values='value')\
                 .to_pandas().set_index('feature').join(
-                    pd.Series([str(i) for i in df.dtypes], index=df.columns, name='dtype')
+                    pd.Series([str(i) for i in dtypes], index=columns, name='dtype')
                 )
     for i, mn, mx in [
         ('f32', np.finfo(np.float32).min, np.finfo(np.float32).max),
@@ -235,14 +243,14 @@ def get_type_pd(df_type, predefine={}, f32=True, i64=False, cat_max=np.inf, txt_
         ret_type[i] = 'string'
     return ret_type
 
-def with_columns_opr(dfl, proc_list, df_feat=None):
+def apply_with_columns(dfl, proc_list, src=None):
     """
     pl.with_column processing
     Parameters:
         dfl: pl.DataFrame
             Data DataFrame to process
         proc_list: list
-            (src, variable name, pl.Expr, Description)
+            (variable name, pl.Expr, Description)
         df_feat: pd.DataFrame
             Feature DataFrame, if None, does not make feature information
     Returns:
@@ -250,89 +258,29 @@ def with_columns_opr(dfl, proc_list, df_feat=None):
             Data DataFrame, Feature DataFrame
     Examples:
         >>> target_assign = [
-        >>>    ('targetproc1', 'target', (pl.col('Rings') + 1).log().cast(pl.Float32), "RMSLE 지표를 최적화하기 위한 Rings의 log1p 변환을 하여 target을 만듭니다."),
+        >>>    ('target', (pl.col('Rings') + 1).log().cast(pl.Float32), "RMSLE 지표를 최적화하기 위한 Rings의 log1p 변환을 하여 target을 만듭니다."),
         >>> ]
-        >>> dfl_train, df_feature = with_column_opr(dfl_train, target_assign, df_feature)
+        >>> dfl_train, df_feature = with_column_opr(dfl_train, target_assign, 'targetproc1')
         >>> dfl_org, _ = with_column_opr(dfl_org, target_assign)
     """
-    df_proc = pd.DataFrame(proc_list, columns=['src', 'val', 'proc', 'Description']).set_index('val')
+    df_proc = pd.DataFrame(proc_list, columns=['val', 'proc', 'Description']).set_index('val')
     dfl = dfl.with_columns(**df_proc['proc'])
-    if df_feat is not None:
-        df_feat = pd.concat([
-            df_proc[['src', 'Description']], 
+    if src is not None:
+        df_var = pd.concat([
+            df_proc[['Description']].assign(src=src), 
             get_type_df(dfl[df_proc.index.tolist()])
-        ], axis=1).pipe(
-            lambda x: pd.concat([df_feat, x], axis=0)
-        )
-    return dfl, df_feat
+        ], axis=1)
+        return dfl, df_var
+    return dfl
 
-def apply_processor(dfl, processor, X_val, info_prov, df_feat=None):
-    """
-    sklearn.preprocessing processing
-    Parameters:
-        dfl: pl.DataFrame
-            Data DataFrame to process
-        processor: object
-            Sklearn Preprocessor object
-        X_val: list
-            Proprocessign target variable names
-        info_prov: Function
-            The function provide columns information
-        df_feat: pd.DataFrame
-            Feature DataFrame, if None, does not make feature information
-    Returns:
-        pl.DataFrame, pd.Dataframe
-            Data DataFrame, Feature DataFrame
-    Examples:
-        >>> X_std = df_feature.query('src == "origin" and type == "Float32"').index.to_series().replace({'Height': 'Height_n'}).tolist()
-        >>> pipe_std_pca = make_pipeline(
-        >>>     StandardScaler(), 
-        >>>     ColumnTransformer([
-        >>>         ('std', 'passthrough', np.arange(len(X_std)).tolist()), 
-        >>>         ('pca', PCA(n_components=4), np.arange(len(X_std)).tolist())
-        >>>     ])
-        >>> )
-        >>> def info_prov(p, v):
-        >>>     if p == 'pca':
-        >>>         return ('pca', v, 'Size features PCA component ' + v, pl.Float32)
-        >>>     return ('std', v, 'StandardScaler: ' + v, pl.Float32)
-        >>> dfl = apply_processor(dfl, processor=pipe_std_pca, X_val=X_std, info_prov=info_prov, df_feat = df_feature)
-    """
-    entity = list()
-    if df_feat is not None:
-        processor.fit(dfl[X_val])
-    for i in processor.get_feature_names_out():
-        sp = i.split('__')
-        if len(sp) > 1: 
-            p, v = sp[0], sp[1]
-        else:
-            p, v = sp[0], ''
-        entity.append(info_prov(p, v))
-    df_feat_ = pd.DataFrame(entity, columns=['src', 'val', 'Description', 'dt']).set_index('val')
-    dfl_proc = pl.DataFrame(
-        processor.transform(dfl.select(cs.by_name(X_val))),
-        schema = df_feat_['dt'].to_dict()
-    )
-    if df_feat is not None:
-        df_feat_ = df_feat_.drop(columns=['dt']).join(
-            get_type_df(dfl_proc)
-        )
-        df_feat = pd.concat([df_feat, df_feat_], axis=0)
-    d = []
-    for i in dfl_proc.columns:
-        if i in dfl.columns:
-            d.append(dfl_proc.drop_in_place(i))
-    dfl = dfl.with_columns(*d)
-    return dfl.hstack(dfl_proc), df_feat
-
-def select_opr(dfl, select_proc, desc, src, df_feat=None):
+def apply_select(dfl, proc_list, src=None):
     """
     apply select_proc
     Parameters:
         dfl: pl.DataFrame
             Data DataFrame to process
-        select_proc: Function
-            dfl proccesing function
+        proc_list: list
+            select function list
         desc: Function
             The function provide columns information
         src: str
@@ -356,91 +304,81 @@ def select_opr(dfl, select_proc, desc, src, df_feat=None):
         >>>                 pl.col('mean_') + pl.col('std_') * sig
         >>>             ).cast(pl.Float32).alias('target_b')
         >>>         )
-        >>> desc = [('clip_rolling', 'target의 범위를 pca0를 기준으로 rolling 통계를 이용하여 고정시킵니다.')]
-        >>> dfl_merge, df_feature = select_opr(dfl_merge, clip_target, desc, df_feature)
+        >>> proc_list = [(clip_target, 'target의 범위를 pca0를 기준으로 rolling 통계를 이용하여 고정시킵니다.')]
+        >>> dfl_merge, df_var = select_opr(dfl_merge, proc_list, 'clip_rolling')
     """
-    dfl_proc = select_proc(dfl)
-    if df_feat is not None:
-        df_feat_ = pd.DataFrame({
-            'val': dfl_proc.columns,
-            'type': [str(i) for i in dfl_proc.dtypes], 
-            'Description': [i[1] for i in desc],
-            'src': [src] * len(desc),
-        }).set_index('val').join(
-            get_type_df(dfl_proc)
-        )
-        df_feat = pd.concat([df_feat, df_feat_], axis=0)
+    dfl_list, var_list = list(), list()
+    for proc, desc in proc_list:
+        dfl_list.append(proc(dfl))
+        if src is not None:
+            var_list.append(
+                pd.DataFrame({
+                    'val': dfl_list[-1].columns,
+                    'Description': [i[1] for i in desc] if type(desc) == list else [desc],
+                }).set_index('val').join(
+                    get_type_df(dfl_list[-1])
+                )
+            )
+    dfl_proc = pl.concat(dfl_list, how = 'horizontal')
+    del dfl_list
     d = []
     for i in dfl_proc.columns:
         if i in dfl.columns:
             d.append(dfl_proc.drop_in_place(i))
     dfl = dfl.with_columns(*d)
-    return dfl.hstack(dfl_proc), df_feat
+    if src is None:
+        return dfl.hstack(dfl_proc)
+    else:
+        return dfl.hstack(dfl_proc), pd.concat(var_list).assign(src=src)
 
-def apply_procs(dfl, procs, df_feat=None):
+def apply_pd(df, proc_list, src=None):
     """
-    apply preprocessors
+    Applies a list of processing functions to a DataFrame and returns the result.
+
     Parameters:
-        dfl: pl.DataFrame
-            Data DataFrame to process
-        procs: list
-            list of processor
-        df_feat: pd.DataFrame
-            Feature DataFrame, if None, does not fit model and make feature information
+        df (pd.DataFrame): The input DataFrame to process.
+        proc_list (list): A list of tuples, where each tuple contains a processing function and a description.
+        src (str, optional): An optional source name to associate with each processed variable. Defaults to None.
+
     Returns:
-        pl.DataFrame, pd.Dataframe
-            Data DataFrame, Feature DataFrame
-    Examples:
-        >>> procs = list()
-        >>> feat_assign = [
-        >>>     ('preproc1', 'Height_n', pl.col('Height').clip(0.004, 0.35), "Clip Height as Height_n")
-        >>> ]
-        >>> procs.append(partial(with_column_opr, proc_list=feat_assign))
-        >>>
-        >>> X_std = df_feature.query('src == "origin" and type == "Float32"').index.to_series().replace({'Height': 'Height_n'}).tolist()
-        >>> pipe_std_pca = make_pipeline(
-        >>>     StandardScaler(), 
-        >>>     ColumnTransformer([
-        >>>         ('std', 'passthrough', np.arange(len(X_std)).tolist()), 
-        >>>         ('pca', PCA(n_components=4), np.arange(len(X_std)).tolist())
-        >>>     ])
-        >>> )
-        >>> def info_prov(p, v):
-        >>>     if p == 'pca':
-        >>>         return ('pca', v, 'Size features PCA component ' + v, pl.Float32)
-        >>>     return ('std', v, 'StandardScaler: ' + v, pl.Float32)
-        >>> procs.append(partial(apply_processor, processor=pipe_std_pca, X_val=X_std, info_prov=info_prov))
-        >>>
-        >>> X_ord = df_feature.query('src == "origin" and type == "Categorical"').index.to_list()
-        >>> ord_enc = OrdinalEncoder(dtype=np.int32, handle_unknown='use_encoded_value', unknown_value=-1)
-        >>> procs.append(partial(apply_processor, processor=ord_enc, X_val=X_ord, info_prov=ord_prov))
-        >>> dfl_train, df_feature = apply_procs(dfl_train, procs, df_feature)
-        >>> dfl_org, _ = apply_procs(dfl_org, procs)
+        tuple: If `src` is provided, returns a tuple of the concatenated processed DataFrame and type variables.
+               Otherwise, returns only the concatenated processed DataFrame.
     """
-    if df_feat is None:
-        for proc in procs:
-            dfl, _ = dfl.pipe(proc)
-    else:
-        for proc in procs:
-            dfl, df_feat = dfl.pipe(partial(proc, df_feat=df_feat))
-    return dfl, df_feat
+    type_list, var_list = list(), list()
+    for proc, desc in proc_list:
+        var_list.append(proc(df))
+        if src is not None:
+            if type(var_list[-1]) == pd.Series:
+                type_list.append([src, var_list[-1], desc])
+            else:
+                for i in var_list[-1].columns:
+                    type_list.append([src, var_list[-1][i], desc.get(i, '')])
+    if src is not None:
+        return pd.concat(var_list, axis=1), get_type_vars(type_list)
+    return pd.concat(var_list, axis=1)
 
-def ord_prov(p, v, suffix=None):
-    """
-    Information provider for Oridinal Encoder
-    """
-    if suffix is None:
-        return ('ord', p, 'OrdinalEncoder: ' + p, pl.Int16)
-    else:
-        return ('ord', p + '_' + suffix, 'OrdinalEncoder: ' + p, pl.Int16)
-
-def ohe_prov(p, v):
-    """
-    Information provider for OneHot Encoder
-    """
-    return ('ohe', p, 'OneHotEncoder: ' + v, pl.Int8)
-
-
+def apply_pd_procs(df, s_procs):
+    nq = [(k, v) for k, v in s_procs.items()]
+    while len(nq) > 0:
+        steps = list()
+        success = list()
+        q = nq.copy()
+        nq = list()
+        proccessed = list()
+        while (len(q) > 0):
+            p = q.pop()
+            try:
+                proccessed.append(p[1](df))
+                success.append(p)
+            except Exception as e:
+                nq.append(p)
+        if len(proccessed) > 0:
+            df = join_and_assign(df, pd.concat(proccessed, axis=1))
+            steps.append(success)
+        else:
+            break
+    return df, nq
+    
 def combine_cat(df, delimiter=''):
     """
     Combines multiple categorical columns in a DataFrame into a single categorical variable, in efficient way. 
@@ -456,7 +394,7 @@ def combine_cat(df, delimiter=''):
     return pd.Series(
         pd.Categorical.from_codes(
             df.apply(lambda x: x.cat.codes).dot(df.nunique().shift(1).fillna(1).astype('int').cumprod()), 
-            [delimiter.join(i) for i in product(*df.apply(lambda x: x.cat.categories.astype('str').tolist(), result_type='reduce'))]
+            [delimiter.join(i[::-1]) for i in product(*df[df.columns[::-1]].apply(lambda x: x.cat.categories.astype('str').tolist(), result_type='reduce'))]
         ), index=df.index
     )
 
@@ -503,9 +441,9 @@ def replace_cat(s, rule):
         else:
             d[c] = len(code_replace)
             code_replace[new_cat] = len(code_replace)
-    return pd.Categorical.from_codes(
+    return pd.Series(pd.Categorical.from_codes(
             s.cat.codes.map(d), list(code_replace.keys()), ordered=s.cat.ordered
-        )
+        ), index=s.index)
 
 def rearrange_cat(s_cat, cat_type, repl_rule):
     """
@@ -539,7 +477,97 @@ def rearrange_cat(s_cat, cat_type, repl_rule):
     s_cat_map = pd.Series(s_cat.cat.categories.values, s_cat.cat.categories.values).apply(
         lambda x: s_map[x] if x in s_map else repl_rule(cat_vals, x)
     )
+    notna = s_cat.notna()
+    return s_cat.loc[notna].pipe(
+        lambda x: pd.Series(pd.Series(pd.Categorical.from_codes(x.map(s_cat_map), cat_vals), index=x.index), index=s_cat.index)
+    ) if notna.sum() != len(s_cat) else pd.Series(pd.Categorical.from_codes(s_cat.map(s_cat_map), cat_vals), index=s_cat.index)
+
+def join_and_assign(df1, df2):
+    """
+    Joins columns from the first DataFrame to the second DataFrame if they do not already exist in the second DataFrame.
+
+    Args:
+        df1 (pd.DataFrame): The source DataFrame containing columns to merge.
+        df2 (pd.DataFrame): The target DataFrame to which columns from `df1` will be joined if not present.
+
+    Returns:
+        pd.DataFrame: The resulting DataFrame with `df1`'s columns added to `df2` where they were missing.
+    """
+    to_merge = [i for i in df1.columns if i not in df2.columns]
+    if len(to_merge) == 0: return df2.copy()
+    return df1[to_merge].join(df2)
+
+class PD_Vars():
+    def __init__(self, file_name, df_var):
+        self.file_name = file_name
+        if df_var is not None:
+            self.df_var = df_var.copy()
+        self.d_procs = OrderedDict()
+        self.modified = False
+
+    def put_proc(self, name, df, proc_list, replace=False):
+        if name in self.d_procs and not replace:
+            src_vars = self.df_var[self.df_var['src'] == name].index
+            if src_vars.isin(df.columns).all():
+                return df
+            return join_and_assign(
+                df, apply_pd(df, self.d_procs[name])
+            )
+        self.modified = True
+        df_ret, df_new_var = apply_pd(df, proc_list, name)
+        self.d_procs[name] = proc_list
+        self.df_var = pd.concat([
+            self.df_var, df_new_var
+        ], axis = 0).groupby(level=0).last()
+        return join_and_assign(
+            df, df_ret
+        )
     
-    return pd.Categorical.from_codes(
-        s_cat.map(s_cat_map), cat_vals, ordered=cat_type.ordered
-    )
+    def proc(self, name, df):
+        return apply_pd(df, d_procs[name])
+        
+    def procs_all(self, df):
+        return apply_pd_procs(df, self.d_procs)
+
+    def del_proc(self, name):
+        if name not in self.d_procs:
+            return
+        del d_procs[name]
+        to_del = df_var.loc[df_var['src'] == name].index
+        df_var.drop(index=to_del, inplace=True)
+
+    def reorder(self, names):
+        for i in names:
+            if i in self.d_procs:
+                self.d_procs.move_to_end(i)
+
+    def clear(self, df):
+        d = [i for i in df.columns if i not in df_var.index]
+        if len(d) == 0:
+            return df
+        else:
+            return df.drop(columns = d)
+
+    def save(self, overwrite=False):
+        if not self.modified and not overwrite:
+            return
+        with open(self.file_name + '.dill', 'wb') as f:
+            dill.dump({
+                'var': self.df_var,
+                'd_procs': self.d_procs,
+            }, f)
+        self.modified = False
+
+    def load(self):
+        with open(self.file_name + '.dill', 'rb') as f:
+            d = dill.load(f)
+            self.df_var = d['var']
+            self.d_procs = d['d_procs']
+            self.modified = False
+
+    def load_or_create(file_name, df_var):
+        if os.path.exists(file_name + '.dill'):
+            pd_vars = PD_Vars(file_name, None)
+            pd_vars.load()
+            return pd_vars
+        return PD_Vars(file_name, df_var)

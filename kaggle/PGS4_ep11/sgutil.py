@@ -1,7 +1,6 @@
 from IPython.display import Image
 import os
 import matplotlib.pyplot as plt
-import pickle as pkl
 import dill
 
 class SGCache:
@@ -71,7 +70,7 @@ class SGCache:
         >>> sc = SGCache('img', 'result')
         >>> s_sum_by_grp = sc.cache_result('sum_by_grp', lambda : df.groupby('grp')['value'].sum() , rerun=False)
         """
-        result_file_name = os.path.join(self.result_path, result_name + '.pkl')
+        result_file_name = os.path.join(self.result_path, result_name + '.dill')
         if not os.path.exists(result_file_name) or rerun:
             result = result_func()
             if result is None:
