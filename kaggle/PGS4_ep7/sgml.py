@@ -821,6 +821,12 @@ class CVModel:
         cv_obj.train_ = obj['train_']
         return cv_obj
 
+    def load_or_create(path, name, sp, config, adapter):
+        if os.path.exists(os.path.join(path,  name + '.cv')):
+            return CVModel.load(path, name)
+        else:
+            return CVModel(path, name, sp, config, adapter)
+                       
     def save(self):
         with open(os.path.join(self.path,  self.name + '.cv'), 'wb') as f:
             dill.dump({
