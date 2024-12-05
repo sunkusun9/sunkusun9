@@ -586,7 +586,7 @@ class PD_Vars():
             PD_Vars: The loaded or newly created PD_Vars object.
         """
         if os.path.exists(file_name + '.dill'):
-            return load(file_name)
+            return PD_Vars.load(file_name)
         return PD_Vars(file_name, df_var)
 
 def combine_cat(df, delimiter=''):

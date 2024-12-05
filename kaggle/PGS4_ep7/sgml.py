@@ -137,6 +137,9 @@ def gb_valid_config(train_set, valid_set):
 def gb_valid_config2(train_set, valid_set):
     return {}, {'eval_set': [valid_set] if valid_set is not None else [train_set]}
 
+def gb_valid_config_valid_only(train_set, valid_set):
+    return {}, {'eval_set': [valid_set]}
+
 def pass_learning_result(m, train_result, preprocessor=None):
     if preprocessor is None:
         return m, train_result
@@ -527,6 +530,8 @@ def cv_model(sp, model, model_params, df, X, y, predict_func, score_func, return
             function to transform the target
         target_inv_func: function
             inverse function to transform the predicted target
+        progress_callback: function
+            callback ffunction for showing the validation progress
     Returns
         list, list, Series, list
         train_metrics, valid_metrics, s_prd, model_result_cv
@@ -709,10 +714,13 @@ class CBAdapter(BaseAdapter):
         else:
             validation_splitter = None
         task_type = argv.get('task_type', None)
+        
         if task_type != 'GPU':
             fit_params = {'callbacks': [CatBoostFitProgressbar(n_estimators=hparams['model_params'].get('n_estimators', 100))]}
+            valid_config = gb_valid_config
         else:
             fit_params = {}
+            valid_config = gb_valid_config_valid_only if validation_fraction > 0 else gb_valid_config
         return {
             'model': self.model, 
             'model_params': {
@@ -725,7 +733,7 @@ class CBAdapter(BaseAdapter):
             'preprocessor': ColumnTransformer(transformers).set_output(transform='pandas') if not is_empty_transformer(transformers) else None,
             'train_params': {
                 'valid_splitter': validation_splitter,
-                'valid_config_proc': gb_valid_config if validation_fraction > 0 or argv.get('validate_train', False) else None,
+                'valid_config_proc': valid_config if validation_fraction > 0 or argv.get('validate_train', False) else None,
                 'fit_params':  fit_params
             },
             'result_proc': argv.get('result_proc', cb_learning_result)
