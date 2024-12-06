@@ -467,7 +467,7 @@ class PD_Vars():
         df_ret, df_new_var = apply_pd(df, proc_list, name)
         self.d_procs[name] = proc_list
         self.df_var = pd.concat([
-            self.df_var, df_new_var
+            self.df_var.drop(columns=[i for i in df_var.columns if i not in df_new_var.columns]), df_new_var
         ], axis = 0).groupby(level=0).last()
         return join_and_assign(
             df, df_ret
