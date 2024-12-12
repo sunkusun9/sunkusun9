@@ -534,12 +534,17 @@ class PD_Vars():
         Returns:
             pd.DataFrame: The cleaned DataFrame with only tracked columns.
         """
-        d = [i for i in df.columns if i not in df_var.index]
+        d = [i for i in df.columns if i not in self.df_var.index]
         if len(d) == 0:
             return df
         else:
             return df.drop(columns = d)
 
+    def clear_procs(self, df):
+        d = [i for i in self.df_var.index if i not in df.columns]
+        if len(d) != 0:
+            self.df_var.drop(index = d, inplace=True)
+            
     def save(self, overwrite=False):
         """
         Saves the processing steps and metadata to a file.
@@ -655,7 +660,7 @@ def replace_cat(s, rule):
             s.cat.codes.map(d), list(code_replace.keys()), ordered=s.cat.ordered
         ), index=s.index)
 
-def rearrange_cat(s_cat, cat_type, repl_rule):
+def rearrange_cat(s_cat, cat_type, repl_rule, use_set=False):
     """
     Rearranges the categories of a pandas Categorical series based on a provided category type
     and a replacement rule for missing categories.
@@ -668,7 +673,7 @@ def rearrange_cat(s_cat, cat_type, repl_rule):
             that are not found in `cat_type`. The function should take two arguments:
             `cat_vals` (the array of category values from `cat_type`) and `x` (a missing category
             from `s_cat`). It returns the value to replace the missing category with.
-
+        use_set(Boolean): provide cat_vals with set
     Returns:
         pd.Categorical: A new pandas Categorical object with the categories of `s_cat` rearranged
         according to `cat_type`, and with missing categories replaced based on `repl_rule`.
@@ -684,9 +689,15 @@ def rearrange_cat(s_cat, cat_type, repl_rule):
     """
     cat_vals = cat_type.categories.values
     s_map = pd.Series(np.arange(len(cat_vals)), cat_vals)
-    s_cat_map = pd.Series(s_cat.cat.categories.values, s_cat.cat.categories.values).apply(
-        lambda x: s_map[x] if x in s_map else repl_rule(cat_vals, x)
-    )
+    if use_set:
+        cat_vals_s = set(cat_vals)
+        s_cat_map = pd.Series(s_cat.cat.categories.values, s_cat.cat.categories.values).apply(
+            lambda x: s_map[x] if x in s_map else repl_rule(cat_vals_s, x)
+        )
+    else:
+        s_cat_map = pd.Series(s_cat.cat.categories.values, s_cat.cat.categories.values).apply(
+            lambda x: s_map[x] if x in s_map else repl_rule(cat_vals, x)
+        )
     notna = s_cat.notna()
     return s_cat.loc[notna].pipe(
         lambda x: pd.Series(pd.Series(pd.Categorical.from_codes(x.map(s_cat_map), cat_vals), index=x.index), index=s_cat.index)
