@@ -581,11 +581,13 @@ def cv_model(sp, model, model_params, df, X, y, predict_func, score_func, return
             train_scores.append(
                 score_func(df_cv_train, target_invfunc(predict_func(m, df_cv_train, X)))
             )
-        del m
         valid_scores.append(score_func(df_valid, valid_prds[-1]))
         if result_proc is not None:
             model_result.append(result_proc(result))
         progress_callback.end_fold(fold, train_scores, valid_scores, model_result)
+        del df_cv_train, df_valid
+        result = None
+        gc.collect()
     s_prd = pd.concat(valid_prds, axis=0)
     progress_callback.end()
     ret = {'valid_scores': valid_scores, 'valid_prd': s_prd, 'model_result': model_result}
