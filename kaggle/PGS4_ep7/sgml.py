@@ -825,7 +825,7 @@ class CVModel:
     
     def load(path, name):
         with open(os.path.join(path,  name + '.cv'), 'rb') as f:
-            obj = dill.load(f)
+            obj = joblib.load(f)
         cv_obj = CVModel(path, name, obj['sp'], obj['config'], obj['adapter'])
         cv_obj.cv_results_ = obj['cv_results_']
         cv_obj.cv_best_ = obj['cv_best_']
@@ -840,7 +840,7 @@ class CVModel:
                        
     def save(self):
         with open(os.path.join(self.path,  self.name + '.cv'), 'wb') as f:
-            dill.dump({
+            joblib.dump({
                 'adapter': self.adapter,
                 'sp': self.sp,
                 'config': self.config,
