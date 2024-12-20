@@ -1,6 +1,6 @@
 from sklearn.base import clone
 from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import TargetEncoder, OrdinalEncoder, MinMaxScaler, StandardScaler, OneHotEncoder
+from sklearn.preprocessing import TargetEncoder, OrdinalEncoder, MinMaxScaler, StandardScaler, OneHotEncoder, PolynomialFeatures
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.decomposition import PCA, TruncatedSVD
 from sklearn.pipeline import make_pipeline
@@ -43,7 +43,7 @@ def get_std_transformer(hparams):
 
 def get_tgt_transformer(hparams):
     if 'X_tgt' in hparams:
-        return ('tgt', TargetEncoder(**hparams['tgt']), hparams['X_tgt'])
+        return ('tgt', TargetEncoder(**hparams.get('tgt', {})), hparams['X_tgt'])
     return None
 
 def get_lda_transformer(hparams):
@@ -88,12 +88,26 @@ def get_pca_transformer(hparams):
         )
     return None
 
+def get_poly_transformer(hparams):
+    poly = hparams.get('poly', {})
+    if len(poly) == 0:
+        return None
+    X_poly, _, poly_transformers = get_transformers(poly)
+    if len(poly_transformers) > 0:
+        return (
+            'poly', make_pipeline(
+                ColumnTransformer(poly_transformers) if len(poly_transformers) > 1 else poly_transformers[1], 
+                PolynomialFeatures(**poly.get('hparams', {}))
+            ), X_poly
+        )
+    return None
+
 def get_transformers(hparams):
     transformers = list()
     for proc in [
         get_mm_transformer, get_std_transformer, get_pca_transformer,
         get_ohe_transformer, get_tgt_transformer, get_lda_transformer,
-        get_tsvd_transformer
+        get_tsvd_transformer, get_poly_transformer
     ]:
         transformer = proc(hparams)
         if transformer is not None:
@@ -136,6 +150,9 @@ def gb_valid_config(train_set, valid_set):
 
 def gb_valid_config2(train_set, valid_set):
     return {}, {'eval_set': [valid_set] if valid_set is not None else [train_set]}
+
+def gb_valid_config_valid_only(train_set, valid_set):
+    return {}, {'eval_set': [valid_set]}
 
 def pass_learning_result(m, train_result, preprocessor=None):
     if preprocessor is None:
@@ -527,6 +544,8 @@ def cv_model(sp, model, model_params, df, X, y, predict_func, score_func, return
             function to transform the target
         target_inv_func: function
             inverse function to transform the predicted target
+        progress_callback: function
+            callback ffunction for showing the validation progress
     Returns
         list, list, Series, list
         train_metrics, valid_metrics, s_prd, model_result_cv
@@ -576,11 +595,13 @@ def cv_model(sp, model, model_params, df, X, y, predict_func, score_func, return
             train_scores.append(
                 score_func(df_cv_train, target_invfunc(predict_func(m, df_cv_train, X)))
             )
-        del m
         valid_scores.append(score_func(df_valid, valid_prds[-1]))
         if result_proc is not None:
             model_result.append(result_proc(result))
         progress_callback.end_fold(fold, train_scores, valid_scores, model_result)
+        del df_cv_train, df_valid
+        result = None
+        gc.collect()
     s_prd = pd.concat(valid_prds, axis=0)
     progress_callback.end()
     ret = {'valid_scores': valid_scores, 'valid_prd': s_prd, 'model_result': model_result}
@@ -709,10 +730,13 @@ class CBAdapter(BaseAdapter):
         else:
             validation_splitter = None
         task_type = argv.get('task_type', None)
+        
         if task_type != 'GPU':
             fit_params = {'callbacks': [CatBoostFitProgressbar(n_estimators=hparams['model_params'].get('n_estimators', 100))]}
+            valid_config = gb_valid_config
         else:
             fit_params = {}
+            valid_config = gb_valid_config_valid_only if validation_fraction > 0 else gb_valid_config
         return {
             'model': self.model, 
             'model_params': {
@@ -725,7 +749,7 @@ class CBAdapter(BaseAdapter):
             'preprocessor': ColumnTransformer(transformers).set_output(transform='pandas') if not is_empty_transformer(transformers) else None,
             'train_params': {
                 'valid_splitter': validation_splitter,
-                'valid_config_proc': gb_valid_config if validation_fraction > 0 or argv.get('validate_train', False) else None,
+                'valid_config_proc': valid_config if validation_fraction > 0 or argv.get('validate_train', False) else None,
                 'fit_params':  fit_params
             },
             'result_proc': argv.get('result_proc', cb_learning_result)
@@ -822,10 +846,11 @@ class CVModel:
         return cv_obj
 
     def load_or_create(path, name, sp, config, adapter):
-        if os.path.exists(os.path.join(path, name + '.cv')):
-            return load(path, name)
-        return CVModel(path, name, sp, config, adapter)
-    
+        if os.path.exists(os.path.join(path,  name + '.cv')):
+            return CVModel.load(path, name)
+        else:
+            return CVModel(path, name, sp, config, adapter)
+                       
     def save(self):
         with open(os.path.join(self.path,  self.name + '.cv'), 'wb') as f:
             dill.dump({

@@ -1,9 +1,12 @@
+import os
 import pandas as pd
 import numpy as np
 import polars as pl
 import polars.selectors as cs
 from functools import partial
 from itertools import product
+from collections import OrderedDict
+import dill
 
 def get_type_df(df):
     """
@@ -86,21 +89,21 @@ def get_type_vars(var_list):
         # Returns a DataFrame with statistics on the variables, including dtype compatibility.
     """
     s_list = list()
-    for src, proc, s, desc in var_list:
+    for src, s, desc in var_list:
         if str(s.dtype) == 'category':
             t = 'Categorical'
             if s.dtype.ordered:
                 s_list.append(
                     pd.Series(
-                        [src, s.name, proc, desc, t, s.isna().sum()] + s.agg(['nunique', 'count', 'min', 'max']).tolist(),
-                        index=['src', 'var', 'processor', 'Description', 'dtype', 'na', 'n_unique', 'count', 'min', 'max']
+                        [src, s.name, desc, t, s.isna().sum()] + s.agg(['nunique', 'count', 'min', 'max']).tolist(),
+                        index=['src', 'var', 'Description', 'dtype', 'na', 'n_unique', 'count', 'min', 'max']
                     )
                 )
             else:
                 s_list.append(
                     pd.Series(
-                        [src, s.name, proc, desc, t, s.isna().sum()] + s.agg(['nunique', 'count']).tolist(),
-                        index=['src', 'var', 'processor', 'Description', 'dtype', 'na', 'n_unique', 'count']
+                        [src, s.name, desc, t, s.isna().sum()] + s.agg(['nunique', 'count']).tolist(),
+                        index=['src', 'var', 'Description', 'dtype', 'na', 'n_unique', 'count']
                     )
                 )
         else:
@@ -111,8 +114,8 @@ def get_type_vars(var_list):
                 t = t[:1].upper() + t[1:]
             s_list.append(
                 pd.Series(
-                    [src, s.name, proc, desc, s.isna().sum(), t] + s.agg(['nunique', 'count', 'min', 'max']).tolist(),
-                    index=['src', 'var', 'processor', 'Description', 'na', 'dtype', 'n_unique', 'count', 'min', 'max']
+                    [src, s.name, desc, s.isna().sum(), t] + s.agg(['nunique', 'count', 'min', 'max']).tolist(),
+                    index=['src', 'var', 'Description', 'na', 'dtype', 'n_unique', 'count', 'min', 'max']
                 )
             )
     df = pd.DataFrame(s_list).set_index('var')
@@ -346,15 +349,37 @@ def apply_pd(df, proc_list, src=None):
         var_list.append(proc(df))
         if src is not None:
             if type(var_list[-1]) == pd.Series:
-                type_list.append([src, proc, var_list[-1], desc])
+                type_list.append([src, var_list[-1], desc])
             else:
                 for i in var_list[-1].columns:
-                    type_list.append([src, proc, var_list[-1][i], desc.get(i, '')])
+                    type_list.append([src, var_list[-1][i], desc.get(i, '')])
     if src is not None:
         return pd.concat(var_list, axis=1), get_type_vars(type_list)
     return pd.concat(var_list, axis=1)
 
 def apply_pd_procs(df, s_procs):
+    """
+    Applies a series of processing steps to a DataFrame and returns the updated DataFrame 
+    along with any unprocessed steps.
+
+    This function takes a dictionary of processing steps, where each key is a step name 
+    and each value is a list of tuples containing processing functions and their descriptions.
+    It iteratively applies these processing steps to the DataFrame, retrying failed steps 
+    until no more progress can be made.
+
+    Parameters:
+        df (pd.DataFrame): The input DataFrame to process.
+        s_procs (dict): A dictionary where keys are step names and values are lists of tuples. 
+            Each tuple consists of:
+                - A processing function (callable): The function to apply to the DataFrame.
+                - A description (any): A description associated with the processing function.
+
+    Returns:
+        tuple:
+            - pd.DataFrame: The DataFrame after all successfully processed steps.
+            - list: A list of unprocessed steps that could not be applied, where each step is 
+              represented as a tuple of step name and corresponding processing list.
+    """
     nq = [(k, v) for k, v in s_procs.items()]
     while len(nq) > 0:
         steps = list()
@@ -365,7 +390,7 @@ def apply_pd_procs(df, s_procs):
         while (len(q) > 0):
             p = q.pop()
             try:
-                proccessed.append(p[1](df))
+                proccessed.append(apply_pd(df, p[1]))
                 success.append(p)
             except Exception as e:
                 nq.append(p)
@@ -376,6 +401,199 @@ def apply_pd_procs(df, s_procs):
             break
     return df, nq
     
+def join_and_assign(df1, df2):
+    """
+    Joins columns from the first DataFrame to the second DataFrame if they do not already exist in the second DataFrame.
+
+    Args:
+        df1 (pd.DataFrame): The source DataFrame containing columns to merge.
+        df2 (pd.DataFrame): The target DataFrame to which columns from `df1` will be joined if not present.
+
+    Returns:
+        pd.DataFrame: The resulting DataFrame with `df1`'s columns added to `df2` where they were missing.
+    """
+    to_merge = [i for i in df1.columns if i not in df2.columns]
+    if len(to_merge) == 0: return df2.copy()
+    return df1[to_merge].join(df2)
+
+class PD_Vars():
+    """
+    A class for managing and applying processing functions to DataFrames, along with metadata tracking.
+
+    Attributes:
+        file_name (str): The name of the file to save or load processing data.
+        df_var (pd.DataFrame): A DataFrame containing metadata about variables and their sources.
+        d_procs (OrderedDict): A dictionary storing processing steps with their associated names.
+        modified (bool): A flag indicating if the processing data has been modified.
+    """
+    
+    def __init__(self, file_name, df_var):
+        """
+        Initializes the PD_Vars object.
+
+        Parameters:
+            file_name (str): The name of the file for saving and loading processing data.
+            df_var (pd.DataFrame): A DataFrame containing variable metadata.
+
+        """
+        self.file_name = file_name
+        if df_var is not None:
+            self.df_var = df_var.copy()
+        self.d_procs = OrderedDict()
+        self.modified = False
+
+    def put_proc(self, name, df, proc_list, replace=False):
+        """
+        Adds or updates a processing step.
+
+        Parameters:
+            name (str): The name of the processing step.
+            df (pd.DataFrame): The DataFrame to which the processing step is applied.
+            proc_list (list): A list of tuples containing processing functions and their descriptions.
+                (function, description), if function returns multiple variables, the type description is dict of which key is variable name and value is the description.
+            replace (bool, optional): If True, replaces the existing processing step. Defaults to False.
+
+        Returns:
+            pd.DataFrame: The updated DataFrame after applying the processing step.
+        """
+        if name in self.d_procs and not replace:
+            src_vars = self.df_var[self.df_var['src'] == name].index
+            if src_vars.isin(df.columns).all():
+                return df
+            return join_and_assign(
+                df, apply_pd(df, self.d_procs[name])
+            )
+        self.modified = True
+        df_ret, df_new_var = apply_pd(df, proc_list, name)
+        self.d_procs[name] = proc_list
+        self.df_var = pd.concat([
+            self.df_var.drop(columns=[i for i in self.df_var.columns if i not in df_new_var.columns]), df_new_var
+        ], axis = 0).groupby(level=0).last()
+        return join_and_assign(
+            df, df_ret
+        )
+    
+    def proc(self, name, df):
+        """
+        Applies a named processing step to a DataFrame.
+
+        Parameters:
+            name (str): The name of the processing step.
+            df (pd.DataFrame): The DataFrame to process.
+
+        Returns:
+            pd.DataFrame: The processed DataFrame.
+        """
+        return apply_pd(df, d_procs[name])
+        
+    def procs_all(self, df):
+        """
+        Applies all stored processing steps to a DataFrame.
+
+        Args:
+            df (pd.DataFrame): The DataFrame to process.
+
+        Returns:
+            tuple:
+                - pd.DataFrame: The DataFrame after applying all processing steps.
+                - list: A list of unprocessed steps that could not be applied.
+        """
+        return apply_pd_procs(df, self.d_procs)
+
+    def del_proc(self, name):
+        """
+        Deletes a named processing step and its associated metadata.
+
+        Args:
+            name (str): The name of the processing step to delete.
+        """
+        if name not in self.d_procs:
+            return
+        del d_procs[name]
+        to_del = df_var.loc[df_var['src'] == name].index
+        df_var.drop(index=to_del, inplace=True)
+
+    def reorder(self, names):
+        """
+        Reorders the processing steps based on a given sequence.
+
+        Args:
+            names (list): A list of processing step names in the desired order.
+        """
+        for i in names:
+            if i in self.d_procs:
+                self.d_procs.move_to_end(i)
+
+    def clear(self, df):
+        """
+        Removes columns from the DataFrame that are not tracked in the metadata.
+
+        Args:
+            df (pd.DataFrame): The DataFrame to clear.
+
+        Returns:
+            pd.DataFrame: The cleaned DataFrame with only tracked columns.
+        """
+        d = [i for i in df.columns if i not in self.df_var.index]
+        if len(d) == 0:
+            return df
+        else:
+            return df.drop(columns = d)
+
+    def clear_procs(self, df):
+        d = [i for i in self.df_var.index if i not in df.columns]
+        if len(d) != 0:
+            self.df_var.drop(index = d, inplace=True)
+            
+    def save(self, overwrite=False):
+        """
+        Saves the processing steps and metadata to a file.
+
+        Args:
+            overwrite (bool, optional): If True, saves even if no modifications were made. Defaults to False.
+        """
+        if not self.modified and not overwrite:
+            return
+        with open(self.file_name + '.dill', 'wb') as f:
+            dill.dump({
+                'var': self.df_var,
+                'd_procs': self.d_procs,
+            }, f)
+        self.modified = False
+
+    @staticmethod
+    def load(file_name):
+        """
+        Loads processing steps and metadata from a file.
+
+        Args:
+            file_name (str): The name of the file to load.
+
+        Returns:
+            PD_Vars: The loaded PD_Vars object.
+        """
+        with open(file_name + '.dill', 'rb') as f:
+            d = dill.load(f)
+        ret = PD_Vars(file_name, d['var'])
+        ret.d_procs = d['d_procs']
+        return ret
+
+    @staticmethod
+    def load_or_create(file_name, df_var):
+        """
+        Loads a PD_Vars object from a file or creates a new one if the file does not exist.
+
+        Args:
+            file_name (str): The name of the file to load or create.
+            df_var (pd.DataFrame): A DataFrame containing variable metadata.
+
+        Returns:
+            PD_Vars: The loaded or newly created PD_Vars object.
+        """
+        if os.path.exists(file_name + '.dill'):
+            return PD_Vars.load(file_name)
+        return PD_Vars(file_name, df_var)
+
 def combine_cat(df, delimiter=''):
     """
     Combines multiple categorical columns in a DataFrame into a single categorical variable, in efficient way. 
@@ -442,7 +660,7 @@ def replace_cat(s, rule):
             s.cat.codes.map(d), list(code_replace.keys()), ordered=s.cat.ordered
         ), index=s.index)
 
-def rearrange_cat(s_cat, cat_type, repl_rule):
+def rearrange_cat(s_cat, cat_type, repl_rule, use_set=False):
     """
     Rearranges the categories of a pandas Categorical series based on a provided category type
     and a replacement rule for missing categories.
@@ -455,7 +673,7 @@ def rearrange_cat(s_cat, cat_type, repl_rule):
             that are not found in `cat_type`. The function should take two arguments:
             `cat_vals` (the array of category values from `cat_type`) and `x` (a missing category
             from `s_cat`). It returns the value to replace the missing category with.
-
+        use_set(Boolean): provide cat_vals with set
     Returns:
         pd.Categorical: A new pandas Categorical object with the categories of `s_cat` rearranged
         according to `cat_type`, and with missing categories replaced based on `repl_rule`.
@@ -471,25 +689,16 @@ def rearrange_cat(s_cat, cat_type, repl_rule):
     """
     cat_vals = cat_type.categories.values
     s_map = pd.Series(np.arange(len(cat_vals)), cat_vals)
-    s_cat_map = pd.Series(s_cat.cat.categories.values, s_cat.cat.categories.values).apply(
-        lambda x: s_map[x] if x in s_map else repl_rule(cat_vals, x)
-    )
+    if use_set:
+        cat_vals_s = set(cat_vals)
+        s_cat_map = pd.Series(s_cat.cat.categories.values, s_cat.cat.categories.values).apply(
+            lambda x: s_map[x] if x in s_map else repl_rule(cat_vals_s, x)
+        )
+    else:
+        s_cat_map = pd.Series(s_cat.cat.categories.values, s_cat.cat.categories.values).apply(
+            lambda x: s_map[x] if x in s_map else repl_rule(cat_vals, x)
+        )
     notna = s_cat.notna()
     return s_cat.loc[notna].pipe(
         lambda x: pd.Series(pd.Series(pd.Categorical.from_codes(x.map(s_cat_map), cat_vals), index=x.index), index=s_cat.index)
     ) if notna.sum() != len(s_cat) else pd.Series(pd.Categorical.from_codes(s_cat.map(s_cat_map), cat_vals), index=s_cat.index)
-
-def join_and_assign(df1, df2):
-    """
-    Joins columns from the first DataFrame to the second DataFrame if they do not already exist in the second DataFrame.
-
-    Args:
-        df1 (pd.DataFrame): The source DataFrame containing columns to merge.
-        df2 (pd.DataFrame): The target DataFrame to which columns from `df1` will be joined if not present.
-
-    Returns:
-        pd.DataFrame: The resulting DataFrame with `df1`'s columns added to `df2` where they were missing.
-    """
-    to_merge = [i for i in df1.columns if i not in df2.columns]
-    if len(to_merge) == 0: return df2.copy()
-    return df1[to_merge].join(df2)
