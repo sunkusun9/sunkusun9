@@ -119,6 +119,8 @@ def get_cat_transformers_pt(hparams):
     if len(X_cat) > 0:
         transformers = [('cat', 'passthrough', X_cat)] + transformers
         X_cat_feature = ['cat__{}'.format(i) for i in X_cat]
+    else:
+        X_cat_feature = None
     return get_X_from_transformer(transformers), X_cat_feature, transformers
 
 def get_cat_transformers_ohe(hparams):

@@ -741,15 +741,13 @@ class CBAdapter(BaseAdapter):
             },
             'result_proc': argv.get('result_proc', cb_learning_result)
         }
-        @override(BaseAdapter)
-        def save_model(self, filename, model):
-            print("Saving: " + filename)
-            model.save_model(filename)
-        
-        @override(BaseAdapter)
-        def load_model(self, filename):
-            model = self.model()
-            return model.load_model(filename)
+    def save_model(self, filename, model):
+        print("Saving: " + filename)
+        model.save_model(filename)
+    
+    def load_model(self, filename):
+        model = self.model()
+        return model.load_model(filename)
 class CVModel:
     def __init__(self, path, name, sp, config, adapter):
         self.path = path
