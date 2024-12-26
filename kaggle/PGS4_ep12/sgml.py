@@ -744,6 +744,13 @@ class CBAdapter(BaseAdapter):
             'result_proc': argv.get('result_proc', cb_learning_result)
         }
 
+    def save_model(self, filename, model):
+        model.save_model(filename)
+    
+    def load_model(self, filename):
+        model = self.model()
+        return model.load_model(filename)
+
 class CVModel:
     def __init__(self, path, name, sp, config, adapter):
         self.path = path
