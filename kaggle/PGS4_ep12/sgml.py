@@ -212,6 +212,27 @@ def cb_learning_result(train_result):
         **{k: v for k, v in train_result.items() if k != 'model'}
     }
 
+def gb_shap_learning_result(train_result, df, interaction = True):
+    explainer = shap.TreeExplainer(train_result['model'])
+    processor = train_result['preprocessor']
+    result = {
+        'X': pd.DataFrame(processor.transform(df), index=df.index, columns=train_result['variables'])
+    }
+    result['shap_values'] = explainer.shap_values(result['X'])
+    if interaction:
+        result['shap_interaction_values'] = explainer.shap_interaction_values(result['X'])
+    return result
+
+def cb_interaction_importance(train_result):
+    s_name = pd.Series(train_result['variables'])
+    return pd.DataFrame(
+        train_result['model'].get_feature_importance(type = 'Interaction'),
+        columns = ['Var1', 'Var2', 'Importance']
+    ).assign(
+        Var1 = lambda x: x['Var1'].map(s_name),
+        Var2 = lambda x: x['Var2'].map(s_name),
+    )
+
 class LGBMFitProgressbar:
     def __init__(self, precision = 5, start_position=0, metric=None, greater_is_better = True, update_cycle = 10):
         self.start_position = start_position

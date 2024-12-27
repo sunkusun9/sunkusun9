@@ -484,7 +484,7 @@ class PD_Vars():
         Returns:
             pd.DataFrame: The processed DataFrame.
         """
-        return apply_pd(df, d_procs[name])
+        return apply_pd(df, self.d_procs[name])
         
     def procs_all(self, df):
         """
