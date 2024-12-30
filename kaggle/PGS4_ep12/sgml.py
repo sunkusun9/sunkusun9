@@ -93,7 +93,7 @@ def get_transformers(hparams):
     for proc in [
         get_mm_transformer, get_std_transformer, get_pca_transformer,
         get_ohe_transformer, get_tgt_transformer, get_lda_transformer,
-        get_tsvd_transformer
+        get_tsvd_transformer, get_ord_transformer
     ]:
         transformer = proc(hparams)
         if transformer is not None:
@@ -107,11 +107,16 @@ def get_cat_transformers_ord(hparams):
     X, _, transformers = get_transformers(hparams)
     X_cat = hparams.get('X_cat', [])
     if len(X_cat) > 0:
-        transformers = [('cat', OrdinalEncoder(dtype='int'), X_cat)] + transformers
+        transformers = [('cat', OrdinalEncoder(dtype='int', **hparams.get('cat', {})), X_cat)] + transformers
         X_cat_feature = np.arange(0, len(X_cat)).tolist()
     else:
         X_cat_feature = []
     return get_X_from_transformer(transformers), X_cat_feature, transformers
+
+def get_ord_transformer(hparams):
+    if 'X_ord' in hparams:
+        return ('ord', OrdinalEncoder(**hparams['ord'], dtype = 'int'), hparams['X_ord'])
+    return None
 
 def get_cat_transformers_pt(hparams):
     X, _, transformers = get_transformers(hparams)
@@ -121,6 +126,11 @@ def get_cat_transformers_pt(hparams):
         X_cat_feature = ['cat__{}'.format(i) for i in X_cat]
     else:
         X_cat_feature = None
+    if 'X_ord' in hparams:
+        if X_cat_feature is None:
+            X_cat_feature = list()
+        X_cat_feature = X_cat_feature + ['ord__{}'.format(i) for i in hparams['X_ord']]
+        
     return get_X_from_transformer(transformers), X_cat_feature, transformers
 
 def get_cat_transformers_ohe(hparams):
