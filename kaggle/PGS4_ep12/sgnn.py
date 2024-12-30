@@ -4,6 +4,7 @@ import pandas as pd
 import numpy as np
 import gc
 import sgml
+import joblib
 
 import tensorflow  as tf
 from tensorflow.keras.callbacks import Callback
@@ -91,7 +92,7 @@ def predict_tf_model(model, X, to_tf_dataset, batch_size=64, **argv):
     prd =  model.predict(ds, verbose=argv.get('verbose', 0))
     del ds
     gc.collect()
-    return prd
+    return np.squeeze(prd)
 
 
 def create_model(inp, o, config, embedding = None, 
@@ -483,6 +484,7 @@ class NNEstimator(BaseEstimator):
         self.random_state = random_state
         self.validation_splitter = validation_splitter
         self.model_ = None
+        self.inp_ = None
     
     def fit(self, X, y=None, sample_weights=None, **argv):
         if self.transformer is not None:
@@ -492,8 +494,9 @@ class NNEstimator(BaseEstimator):
         if 'refit' not in argv or not argv['refit'] or not self.is_fitted:
             if self.model_ is None:
                 if self.model is None:
+                    self.inp_ = get_input(X, **self.model_params)
                     self.model_ = create_model(
-                        inp = get_input(X, **self.model_params),
+                        inp = self.inp_,
                         proba=self.classes_ is not None, 
                         o=1 if self.classes_ is None or self.is_binary else len(self.classes_),
                         **self.model_params
@@ -541,6 +544,14 @@ class NNEstimator(BaseEstimator):
             X = self.transformer_.transform(X)
         return predict_tf_model(self.model_, X, self.to_tf_dataset, batch_size=self.batch_size, **argv)
 
+    def get_obj(self):
+        return None
+
+    def set_obj(self, o):
+        self.classes_ = None
+        self.is_binary = False
+        pass
+
 class NNClassifier(ClassifierMixin, NNEstimator):
     def fit(self, X, y, **argv):
         self.le_ = LabelEncoder()
@@ -575,23 +586,72 @@ class NNClassifier(ClassifierMixin, NNEstimator):
     def score(self, X, y, sample_weight=None):
         return accuracy_score(y, self.predict(X))
 
+    def get_obj(self):
+        return {
+            'le': self.le_,
+            'classes': self.classes_,
+        }
+
+    def set_obj(self, o):
+        self.le_ = o['le']
+        self.classes_ = o['classes']
+
 class NNRegressor(NNEstimator, RegressorMixin):
     def fit(self, X, y, **argv):
         self.classes_ = None
+        self.is_binary = False
         if self.loss is None:
             self.loss_ = tf.keras.losses.MeanSquaredError()
         else:
             self.loss_ = self.loss
         return super().fit(X, y, **argv)
-    
-    def predict(self, X, **argv):
-        ds_, _ = create_dataset(X, ordinal=self.ordinal, 
-                                embedding=self.embedding, batch_size=self.batch_size, shuffle_size=0)
-        return np.squeeze(self.model_.predict(ds_, **argv))
-    
+       
     def score(self, X, y, sample_weight=None):
         return r2_score(y, self.predict(X))
 
+def save_model(filename, model):
+    joblib.dump({
+        "model": model.model,
+        "loss": model.loss,
+        "model_params": model.model_params,
+        "to_tf_dataset": model.to_tf_dataset,
+        "random_state": model.random_state,
+        "optimizer": model.optimizer,
+        "epochs": model.epochs,
+        "transformer": model.transformer,
+        "batch_size": model.batch_size,
+        "shuffle_size": model.shuffle_size,
+        "early_stopping": model.early_stopping,
+        "reduce_lr_on_plateau": model.reduce_lr_on_plateau,
+        "lr_scheduler": model.lr_scheduler,
+        "random_state": model.random_state,
+        "validation_splitter": model.validation_splitter,
+        'weights': model.model_.get_weights(),
+        'inp': model.inp_,
+        'obj': model.get_obj()
+    }, filename)
+        
+def load_model(filename, m):
+    d = joblib.load(filename)
+    w = d.pop('weights')
+    o = d.pop('obj')
+    inp = d.pop('inp')
+    model = m(**d)
+    model.set_obj(o)
+    if model.model is None:
+        model.model_ = sgnn.create_model(
+            inp = inp,
+            proba=model.classes_ is not None, 
+            o=1 if model.classes_ is None or model.is_binary else len(model.classes_),
+            **model.model_params
+        )
+    else:
+        self.model_ = model.model(**self.model_params)
+    
+    model.model_.set_weights(w)
+    model.is_fitted_ = True
+    
+    return model
 
 class NNAdapter(sgml.BaseAdapter):
     def __init__(self, model, to_tf_dataset=None, target_func=None):
@@ -629,3 +689,10 @@ class NNAdapter(sgml.BaseAdapter):
             'result_proc': argv.get('result_proc', nn_learning_result),
             'target_func': argv.get('target_func', self.target_func)
         }
+"""        
+    def save_model(self, filename, model):
+        save_model(filename, model)
+    
+    def load_model(self, filename):
+        return load_model(filename, self.model)
+"""
