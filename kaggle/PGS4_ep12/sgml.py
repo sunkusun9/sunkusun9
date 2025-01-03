@@ -243,6 +243,12 @@ def cb_interaction_importance(train_result):
         Var2 = lambda x: x['Var2'].map(s_name),
     )
 
+def lr_learning_result(train_result):
+    return {
+        'coef': pd.Series(train_result['model'].coef_, index=train_result['variables']) if len(train_result['model'].coef_.shape) == 1 else \
+            pd.DataFrame(train_result['model'].coef_.T, index=train_result['variables'])
+    }
+
 class LGBMFitProgressbar:
     def __init__(self, precision = 5, start_position=0, metric=None, greater_is_better = True, update_cycle = 10):
         self.start_position = start_position

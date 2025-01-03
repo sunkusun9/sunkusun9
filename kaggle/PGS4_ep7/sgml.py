@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 import gc
 import os
+import shap
 
 try:
     from tqdm.notebook import tqdm
@@ -93,7 +94,7 @@ def get_transformers(hparams):
     for proc in [
         get_mm_transformer, get_std_transformer, get_pca_transformer,
         get_ohe_transformer, get_tgt_transformer, get_lda_transformer,
-        get_tsvd_transformer
+        get_tsvd_transformer, get_ord_transformer
     ]:
         transformer = proc(hparams)
         if transformer is not None:
@@ -107,11 +108,16 @@ def get_cat_transformers_ord(hparams):
     X, _, transformers = get_transformers(hparams)
     X_cat = hparams.get('X_cat', [])
     if len(X_cat) > 0:
-        transformers = [('cat', OrdinalEncoder(dtype='int'), X_cat)] + transformers
+        transformers = [('cat', OrdinalEncoder(dtype='int', **hparams.get('cat', {})), X_cat)] + transformers
         X_cat_feature = np.arange(0, len(X_cat)).tolist()
     else:
         X_cat_feature = []
     return get_X_from_transformer(transformers), X_cat_feature, transformers
+
+def get_ord_transformer(hparams):
+    if 'X_ord' in hparams:
+        return ('ord', OrdinalEncoder(**hparams['ord'], dtype = 'int'), hparams['X_ord'])
+    return None
 
 def get_cat_transformers_pt(hparams):
     X, _, transformers = get_transformers(hparams)
@@ -119,6 +125,13 @@ def get_cat_transformers_pt(hparams):
     if len(X_cat) > 0:
         transformers = [('cat', 'passthrough', X_cat)] + transformers
         X_cat_feature = ['cat__{}'.format(i) for i in X_cat]
+    else:
+        X_cat_feature = None
+    if 'X_ord' in hparams:
+        if X_cat_feature is None:
+            X_cat_feature = list()
+        X_cat_feature = X_cat_feature + ['ord__{}'.format(i) for i in hparams['X_ord']]
+        
     return get_X_from_transformer(transformers), X_cat_feature, transformers
 
 def get_cat_transformers_ohe(hparams):
@@ -208,6 +221,33 @@ def cb_learning_result(train_result):
             train_result['model'].feature_importances_, index=train_result['variables']
         ).sort_values(),
         **{k: v for k, v in train_result.items() if k != 'model'}
+    }
+
+def gb_shap_learning_result(train_result, df, interaction = True):
+    explainer = shap.TreeExplainer(train_result['model'])
+    processor = train_result['preprocessor']
+    result = {
+        'X': pd.DataFrame(processor.transform(df), index=df.index, columns=train_result['variables'])
+    }
+    result['shap_values'] = explainer.shap_values(result['X'])
+    if interaction:
+        result['shap_interaction_values'] = explainer.shap_interaction_values(result['X'])
+    return result
+
+def cb_interaction_importance(train_result):
+    s_name = pd.Series(train_result['variables'])
+    return pd.DataFrame(
+        train_result['model'].get_feature_importance(type = 'Interaction'),
+        columns = ['Var1', 'Var2', 'Importance']
+    ).assign(
+        Var1 = lambda x: x['Var1'].map(s_name),
+        Var2 = lambda x: x['Var2'].map(s_name),
+    )
+
+def lr_learning_result(train_result):
+    return {
+        'coef': pd.Series(train_result['model'].coef_, index=train_result['variables']) if len(train_result['model'].coef_.shape) == 1 else \
+            pd.DataFrame(train_result['model'].coef_.T, index=train_result['variables'])
     }
 
 class LGBMFitProgressbar:
@@ -609,9 +649,14 @@ def train(df, hparam, config, adapter, **argv):
     return train_model(df_train=df, **hparam_, **config, **train_params), hparam_['X']
 
 def stack_cv(cv_list, y):
-    return pd.concat([
-        i.cv_best_['prd'].rename(i.name) for i in cv_list
-    ] + [y], axis=1, join='inner')
+    if type(cv_list[0].cv_best_['prd']) == pd.Series:
+        return pd.concat([
+            i.cv_best_['prd'].rename(i.name) for i in cv_list
+        ] + [y], axis=1, join='inner')
+    else:
+        return pd.concat([
+            i.cv_best_['prd'].rename(columns=lambda x: '{}_{}'.format(i.name, x)) for i in cv_list
+        ] + [y], axis = 1, join = 'inner')
 
 def stack_prd(cv_list, df, config):
     return pd.concat([
@@ -741,6 +786,7 @@ class CBAdapter(BaseAdapter):
             },
             'result_proc': argv.get('result_proc', cb_learning_result)
         }
+
     def save_model(self, filename, model):
         model.save_model(filename)
     
@@ -831,7 +877,7 @@ class CVModel:
     
     def load(path, name):
         with open(os.path.join(path,  name + '.cv'), 'rb') as f:
-            obj = joblib.load(f)
+            obj = dill.load(f)
         cv_obj = CVModel(path, name, obj['sp'], obj['config'], obj['adapter'])
         cv_obj.cv_results_ = obj['cv_results_']
         cv_obj.cv_best_ = obj['cv_best_']
@@ -846,7 +892,7 @@ class CVModel:
                        
     def save(self):
         with open(os.path.join(self.path,  self.name + '.cv'), 'wb') as f:
-            joblib.dump({
+            dill.dump({
                 'adapter': self.adapter,
                 'sp': self.sp,
                 'config': self.config,

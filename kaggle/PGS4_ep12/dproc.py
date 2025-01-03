@@ -704,3 +704,10 @@ def rearrange_cat(s_cat, cat_type, repl_rule, use_set=False):
     return s_cat.loc[notna].pipe(
         lambda x: pd.Series(pd.Series(pd.Categorical.from_codes(x.map(s_cat_map), cat_vals), index=x.index), index=s_cat.index)
     ) if notna.sum() != len(s_cat) else pd.Series(pd.Categorical.from_codes(s_cat.map(s_cat_map), cat_vals), index=s_cat.index)
+
+def split_preprocess_var(s_names, org_names):
+    return s_names.str.split('__|_').apply(
+        lambda x: (x, [i for i in range(len(x), 0, -1) if '_'.join(x[1:i]) in org_names][0])
+    ).apply(
+        lambda x: pd.Series(['_'.join(x[0][:x[1]]), ''.join(x[0][x[1]:])], index=['var1', 'var2'])
+    )
