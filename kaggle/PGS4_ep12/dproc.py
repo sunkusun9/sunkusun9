@@ -512,8 +512,8 @@ class PD_Vars():
         if name not in self.d_procs:
             return
         del self.d_procs[name]
-        to_del = df_var.loc[df_var['src'] == name].index
-        df_var.drop(index=to_del, inplace=True)
+        to_del = self.df_var.loc[self.df_var['src'] == name].index
+        self.df_var.drop(index=to_del, inplace=True)
 
     def reorder(self, names):
         """

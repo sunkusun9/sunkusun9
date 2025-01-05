@@ -658,7 +658,7 @@ def stack_cv(cv_list, y):
             i.cv_best_['prd'].rename(columns=lambda x: '{}_{}'.format(i.name, x)) for i in cv_list
         ] + [y], axis = 1, join = 'inner')
 
-def stack_prd(cv_list, df, config):
+def stack_prd(cv_list, df):
     return pd.concat([
         i.get_predictor()(df).rename(i.name) for i in cv_list
     ], axis=1)
@@ -891,6 +891,8 @@ class CVModel:
             return CVModel(path, name, sp, config, adapter)
                        
     def save(self):
+        if self.config['progress_callback'] is not None:
+            self.config['progress_callback'].progress_bar = None
         with open(os.path.join(self.path,  self.name + '.cv'), 'wb') as f:
             dill.dump({
                 'adapter': self.adapter,

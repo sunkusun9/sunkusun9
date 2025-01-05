@@ -611,7 +611,6 @@ class NNRegressor(NNEstimator, RegressorMixin):
 
 def save_model(filename, model):
     joblib.dump({
-        "model": model.model,
         "loss": model.loss,
         "model_params": model.model_params,
         "to_tf_dataset": model.to_tf_dataset,
@@ -689,10 +688,9 @@ class NNAdapter(sgml.BaseAdapter):
             'result_proc': argv.get('result_proc', nn_learning_result),
             'target_func': argv.get('target_func', self.target_func)
         }
-"""        
+    
     def save_model(self, filename, model):
         save_model(filename, model)
     
     def load_model(self, filename):
         return load_model(filename, self.model)
-"""
