@@ -2,7 +2,6 @@ from IPython.display import Image
 import os
 import matplotlib.pyplot as plt
 import pickle as pkl
-import dill
 
 class SGCache:
     def __init__(self, img_path, result_path):
@@ -77,8 +76,8 @@ class SGCache:
             if result is None:
                 return
             with open(result_file_name, 'wb') as f:
-                dill.dump(result, f)
+                pkl.dump(result, f)
         else:
             with open(result_file_name, 'rb') as f:
-                result = dill.load(f)
+                result = pkl.load(f)
         return result

@@ -110,6 +110,8 @@ def get_type_vars(var_list):
             t = str(s.dtype)
             if t == 'str':
                 t = 'String'
+            if t == 'datetime64[ns]':
+                t = 'Datetime'
             else:
                 t = t[:1].upper() + t[1:]
             s_list.append(
@@ -126,7 +128,7 @@ def get_type_vars(var_list):
             ('i16', np.iinfo(np.int16).min, np.iinfo(np.int16).max),
             ('i8', np.iinfo(np.int8).min, np.iinfo(np.int8).max)
         ]:
-            df[i] = df.loc[~df['dtype'].isin(['String', 'Categorical'])].apply(
+            df[i] = df.loc[~df['dtype'].isin(['String', 'Categorical', 'Datetime'])].apply(
                 lambda x: (x['min'] >= mn) and (x['max'] <= mx), axis=1
             )
     return df
@@ -484,7 +486,7 @@ class PD_Vars():
         Returns:
             pd.DataFrame: The processed DataFrame.
         """
-        return apply_pd(df, d_procs[name])
+        return apply_pd(df, self.d_procs[name])
         
     def procs_all(self, df):
         """
@@ -509,9 +511,9 @@ class PD_Vars():
         """
         if name not in self.d_procs:
             return
-        del d_procs[name]
-        to_del = df_var.loc[df_var['src'] == name].index
-        df_var.drop(index=to_del, inplace=True)
+        del self.d_procs[name]
+        to_del = self.df_var.loc[self.df_var['src'] == name].index
+        self.df_var.drop(index=to_del, inplace=True)
 
     def reorder(self, names):
         """
@@ -702,3 +704,10 @@ def rearrange_cat(s_cat, cat_type, repl_rule, use_set=False):
     return s_cat.loc[notna].pipe(
         lambda x: pd.Series(pd.Series(pd.Categorical.from_codes(x.map(s_cat_map), cat_vals), index=x.index), index=s_cat.index)
     ) if notna.sum() != len(s_cat) else pd.Series(pd.Categorical.from_codes(s_cat.map(s_cat_map), cat_vals), index=s_cat.index)
+
+def split_preprocess_var(s_names, org_names):
+    return s_names.str.split('__|_').apply(
+        lambda x: (x, ([i for i in range(len(x), 0, -1) if '_'.join(x[1:i]) in org_names] + [-1])[0])
+    ).apply(
+        lambda x: pd.Series(['_'.join(x[0][:x[1]]), ''.join(x[0][x[1]:])], index=['var1', 'var2'])
+    )

@@ -1,18 +1,19 @@
 from sklearn.base import clone
 from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import TargetEncoder, OrdinalEncoder, MinMaxScaler, StandardScaler, OneHotEncoder, PolynomialFeatures
+from sklearn.preprocessing import TargetEncoder, OrdinalEncoder, MinMaxScaler, StandardScaler, OneHotEncoder
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.decomposition import PCA, TruncatedSVD
 from sklearn.pipeline import make_pipeline
 from sklearn.model_selection import train_test_split
 
-import joblib
 import dill
+import joblib
 import pickle as pkl
 import numpy as np
 import pandas as pd
 import gc
 import os
+import shap
 
 try:
     from tqdm.notebook import tqdm
@@ -88,26 +89,12 @@ def get_pca_transformer(hparams):
         )
     return None
 
-def get_poly_transformer(hparams):
-    poly = hparams.get('poly', {})
-    if len(poly) == 0:
-        return None
-    X_poly, _, poly_transformers = get_transformers(poly)
-    if len(poly_transformers) > 0:
-        return (
-            'poly', make_pipeline(
-                ColumnTransformer(poly_transformers) if len(poly_transformers) > 1 else poly_transformers[1], 
-                PolynomialFeatures(**poly.get('hparams', {}))
-            ), X_poly
-        )
-    return None
-
 def get_transformers(hparams):
     transformers = list()
     for proc in [
         get_mm_transformer, get_std_transformer, get_pca_transformer,
         get_ohe_transformer, get_tgt_transformer, get_lda_transformer,
-        get_tsvd_transformer, get_poly_transformer
+        get_tsvd_transformer, get_ord_transformer
     ]:
         transformer = proc(hparams)
         if transformer is not None:
@@ -121,11 +108,16 @@ def get_cat_transformers_ord(hparams):
     X, _, transformers = get_transformers(hparams)
     X_cat = hparams.get('X_cat', [])
     if len(X_cat) > 0:
-        transformers = [('cat', OrdinalEncoder(dtype='int'), X_cat)] + transformers
+        transformers = [('cat', OrdinalEncoder(dtype='int', **hparams.get('cat', {})), X_cat)] + transformers
         X_cat_feature = np.arange(0, len(X_cat)).tolist()
     else:
         X_cat_feature = []
     return get_X_from_transformer(transformers), X_cat_feature, transformers
+
+def get_ord_transformer(hparams):
+    if 'X_ord' in hparams:
+        return ('ord', OrdinalEncoder(**hparams['ord'], dtype = 'int'), hparams['X_ord'])
+    return None
 
 def get_cat_transformers_pt(hparams):
     X, _, transformers = get_transformers(hparams)
@@ -133,6 +125,13 @@ def get_cat_transformers_pt(hparams):
     if len(X_cat) > 0:
         transformers = [('cat', 'passthrough', X_cat)] + transformers
         X_cat_feature = ['cat__{}'.format(i) for i in X_cat]
+    else:
+        X_cat_feature = None
+    if 'X_ord' in hparams:
+        if X_cat_feature is None:
+            X_cat_feature = list()
+        X_cat_feature = X_cat_feature + ['ord__{}'.format(i) for i in hparams['X_ord']]
+        
     return get_X_from_transformer(transformers), X_cat_feature, transformers
 
 def get_cat_transformers_ohe(hparams):
@@ -159,9 +158,6 @@ def pass_learning_result(m, train_result, preprocessor=None):
         return m, train_result
     else:
         return make_pipeline(preprocessor, m), train_result
-
-def m_learning_result(train_result):
-    return train_result
 
 def lgb_learning_result(train_result):
     """
@@ -225,6 +221,33 @@ def cb_learning_result(train_result):
             train_result['model'].feature_importances_, index=train_result['variables']
         ).sort_values(),
         **{k: v for k, v in train_result.items() if k != 'model'}
+    }
+
+def gb_shap_learning_result(train_result, df, interaction = True):
+    explainer = shap.TreeExplainer(train_result['model'])
+    processor = train_result['preprocessor']
+    result = {
+        'X': pd.DataFrame(processor.transform(df), index=df.index, columns=train_result['variables'])
+    }
+    result['shap_values'] = explainer.shap_values(result['X'])
+    if interaction:
+        result['shap_interaction_values'] = explainer.shap_interaction_values(result['X'])
+    return result
+
+def cb_interaction_importance(train_result):
+    s_name = pd.Series(train_result['variables'])
+    return pd.DataFrame(
+        train_result['model'].get_feature_importance(type = 'Interaction'),
+        columns = ['Var1', 'Var2', 'Importance']
+    ).assign(
+        Var1 = lambda x: x['Var1'].map(s_name),
+        Var2 = lambda x: x['Var2'].map(s_name),
+    )
+
+def lr_learning_result(train_result):
+    return {
+        'coef': pd.Series(train_result['model'].coef_, index=train_result['variables']) if len(train_result['model'].coef_.shape) == 1 else \
+            pd.DataFrame(train_result['model'].coef_.T, index=train_result['variables'])
     }
 
 class LGBMFitProgressbar:
@@ -463,7 +486,6 @@ def train_model(model, model_params, df_train, X, y, valid_splitter=None, prepro
         model_params_2, fit_params_2 = {}, {}
     result['train_shape'] = X_train.shape
     result['target'] = y
-    result['target_func'] = target_func
     m =  model(**model_params, **model_params_2)
     m.fit(X_train, y_train, **fit_params, **fit_params_2)
     del X_train, y_train
@@ -597,9 +619,13 @@ def cv_model(sp, model, model_params, df, X, y, predict_func, score_func, return
             )
         valid_scores.append(score_func(df_valid, valid_prds[-1]))
         if result_proc is not None:
-            model_result.append(result_proc(result))
+            if type(result_proc) is list:
+                for proc in result_proc:
+                    model_result.append(proc(result))
+            else:
+                model_result.append(result_proc(result))
         progress_callback.end_fold(fold, train_scores, valid_scores, model_result)
-        del df_cv_train, df_valid
+        del df_cv_train, df_valid, m
         result = None
         gc.collect()
     s_prd = pd.concat(valid_prds, axis=0)
@@ -622,11 +648,16 @@ def train(df, hparam, config, adapter, **argv):
     return train_model(df_train=df, **hparam_, **config, **train_params), hparam_['X']
 
 def stack_cv(cv_list, y):
-    return pd.concat([
-        i.cv_best_['prd'].rename(i.name) for i in cv_list
-    ] + [y], axis=1, join='inner')
+    if type(cv_list[0].cv_best_['prd']) == pd.Series:
+        return pd.concat([
+            i.cv_best_['prd'].rename(i.name) for i in cv_list
+        ] + [y], axis=1, join='inner')
+    else:
+        return pd.concat([
+            i.cv_best_['prd'].rename(columns=lambda x: '{}_{}'.format(i.name, x)) for i in cv_list
+        ] + [y], axis = 1, join = 'inner')
 
-def stack_prd(cv_list, df, config):
+def stack_prd(cv_list, df):
     return pd.concat([
         i.get_predictor()(df).rename(i.name) for i in cv_list
     ], axis=1)
@@ -755,6 +786,13 @@ class CBAdapter(BaseAdapter):
             'result_proc': argv.get('result_proc', cb_learning_result)
         }
 
+    def save_model(self, filename, model):
+        model.save_model(filename)
+    
+    def load_model(self, filename):
+        model = self.model()
+        return model.load_model(filename)
+
 class CVModel:
     def __init__(self, path, name, sp, config, adapter):
         self.path = path
@@ -852,6 +890,8 @@ class CVModel:
             return CVModel(path, name, sp, config, adapter)
                        
     def save(self):
+        if 'progress_callback' in self.config and self.config['progress_callback'] is not None:
+            self.config['progress_callback'].progress_bar = None
         with open(os.path.join(self.path,  self.name + '.cv'), 'wb') as f:
             dill.dump({
                 'adapter': self.adapter,

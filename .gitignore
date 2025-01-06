@@ -5,3 +5,4 @@ img/
 __pycache__/
 result/
 catboost_info/
+model/
