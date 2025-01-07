@@ -688,7 +688,7 @@ class NNAdapter(sgml.BaseAdapter):
             'result_proc': argv.get('result_proc', nn_learning_result),
             'target_func': argv.get('target_func', self.target_func)
         }
-    
+      
     def save_model(self, filename, model):
         save_model(filename, model)
     

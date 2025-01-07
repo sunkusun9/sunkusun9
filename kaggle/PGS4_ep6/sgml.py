@@ -6,8 +6,8 @@ from sklearn.decomposition import PCA, TruncatedSVD
 from sklearn.pipeline import make_pipeline
 from sklearn.model_selection import train_test_split
 
-import dill
 import joblib
+import dill
 import pickle as pkl
 import numpy as np
 import pandas as pd
@@ -486,6 +486,7 @@ def train_model(model, model_params, df_train, X, y, valid_splitter=None, prepro
         model_params_2, fit_params_2 = {}, {}
     result['train_shape'] = X_train.shape
     result['target'] = y
+    result['target_func'] = target_func
     m =  model(**model_params, **model_params_2)
     m.fit(X_train, y_train, **fit_params, **fit_params_2)
     del X_train, y_train
@@ -657,7 +658,7 @@ def stack_cv(cv_list, y):
             i.cv_best_['prd'].rename(columns=lambda x: '{}_{}'.format(i.name, x)) for i in cv_list
         ] + [y], axis = 1, join = 'inner')
 
-def stack_prd(cv_list, df):
+def stack_prd(cv_list, df, config):
     return pd.concat([
         i.get_predictor()(df).rename(i.name) for i in cv_list
     ], axis=1)
@@ -890,8 +891,6 @@ class CVModel:
             return CVModel(path, name, sp, config, adapter)
                        
     def save(self):
-        if 'progress_callback' in self.config and self.config['progress_callback'] is not None:
-            self.config['progress_callback'].progress_bar = None
         with open(os.path.join(self.path,  self.name + '.cv'), 'wb') as f:
             dill.dump({
                 'adapter': self.adapter,
