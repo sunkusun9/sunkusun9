@@ -1,5 +1,6 @@
 from sklearn.base import TransformerMixin
 import pandas as pd
+import numpy as np
 import dproc
 
 class CatArrangerFreq(TransformerMixin):
@@ -165,3 +166,41 @@ class CombineTransformer(TransformerMixin):
             i.transform(X).rename(columns = self.df_vars_.loc[(name, ), ['org', 'rename']].set_index('org')['rename'])
             for name, i in self.transformers
         ] + lbl, axis=1)
+
+
+class LGBMImputer(TransformerMixin):
+    def __init__(self, lgb_model, hparams, X_num, X_cat, target, na_value = np.nan):
+        self.lgb_model = lgb_model
+        self.hparams = hparams
+        self.X_num = X_num
+        self.X_cat = X_cat
+        self.target = target
+        self.na_value = na_value
+
+    def fit(self, X, y = None):
+        self.model_ = self.lgb_model(verbose = -1, **self.hparams)
+        X.loc[X[self.target] != self.na_value].pipe(
+            lambda x: self.model_.fit(x[self.X_num + self.X_cat], x[self.target], categorical_feature = self.X_cat)
+        )
+        return self
+    def transform(self, X):
+        s = X[self.target].copy()
+        s.loc[s == self.na_value] = X.loc[s == self.na_value].pipe(
+            lambda x: pd.Series(self.model_.predict(x[self.X_num + self.X_cat]), index = x.index)
+        )
+        return s.to_frame()
+    def get_params(self, deep=True):
+        return {
+            'lgb_model': self.lgb_model, 
+            'hparams': self.hparams,
+            'X_num': self.X_num,
+            'X_cat': self.X_cat,
+            'target': self.target,
+            'na_value': self.na_value
+        }
+
+    def set_output(self, transform='pandas'):
+        pass
+
+    def get_feature_names_out(self, X = None):
+        return [target]

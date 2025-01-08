@@ -7,8 +7,6 @@ from sklearn.pipeline import make_pipeline
 from sklearn.model_selection import train_test_split
 
 import joblib
-import dill
-import pickle as pkl
 import numpy as np
 import pandas as pd
 import gc
@@ -698,6 +696,7 @@ class LGBMAdapter(BaseAdapter):
                 validation_splitter = argv.get('validation_splitter')(validation_fraction)
         else:
             validation_splitter = None
+            
         return {
             'model': self.model, 
             'model_params': {'verbose': -1, **hparams['model_params']},
@@ -799,8 +798,8 @@ class CVModel:
         self.path = path
         self.name = name
         self.sp = sp
-        self.adapter = adapter
         self.config = config
+        self.adapter = adapter
         self.cv_results_ = dict()
         self.cv_best_= {
             'score': -np.inf, 'hparams': {}, 'prd': None, 'k': ''
@@ -875,28 +874,17 @@ class CVModel:
         model_ = adapter.load_model(os.path.join(path,  name + '.model'))
         return preprocessor_, model_
     
-    def load(path, name):
-        with open(os.path.join(path,  name + '.cv'), 'rb') as f:
-            obj = dill.load(f)
+    def load(self, path, name):
+        obj = joblib.load(f, os.path.join(path,  name + '.cv'))
         cv_obj = CVModel(path, name, obj['sp'], obj['config'], obj['adapter'])
         cv_obj.cv_results_ = obj['cv_results_']
         cv_obj.cv_best_ = obj['cv_best_']
         cv_obj.train_ = obj['train_']
         return cv_obj
-
-    def load_or_create(path, name, sp, config, adapter):
-        if os.path.exists(os.path.join(path,  name + '.cv')):
-            return CVModel.load(path, name)
-        else:
-            return CVModel(path, name, sp, config, adapter)
                        
     def save(self):
-        with open(os.path.join(self.path,  self.name + '.cv'), 'wb') as f:
-            dill.dump({
-                'adapter': self.adapter,
-                'sp': self.sp,
-                'config': self.config,
-                'cv_results_': self.cv_results_,
-                'cv_best_': self.cv_best_,
-                'train_': self.train_
-            }, f)
+        joblib.dump({
+            'cv_results_': self.cv_results_,
+            'cv_best_': self.cv_best_,
+            'train_': self.train_
+        }, os.path.join(self.path,  self.name + '.cv'))
