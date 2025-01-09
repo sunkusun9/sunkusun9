@@ -6,7 +6,6 @@ import polars.selectors as cs
 from functools import partial
 from itertools import product
 from collections import OrderedDict
-import dill
 
 def get_type_df(df):
     """
