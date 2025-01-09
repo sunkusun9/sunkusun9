@@ -3,6 +3,16 @@ import pandas as pd
 import numpy as np
 import dproc
 
+import lightgbm as lgb
+
+from sklearn.metrics import accuracy_score, mean_squared_error
+from sklearn.model_selection import train_test_split
+
+try:
+    from tqdm.notebook import tqdm
+except:
+    from tqdm import tqdm
+
 class CatArrangerFreq(TransformerMixin):
     def __init__(self, min_frequency, unknown_value = None, na_value = None):
         self.min_frequency = min_frequency
@@ -199,6 +209,155 @@ class LGBMImputer(TransformerMixin):
             'na_value': self.na_value
         }
 
+    def set_output(self, transform='pandas'):
+        pass
+
+    def get_feature_names_out(self, X = None):
+        return [target]
+
+class ImputerProgressBar():
+    def __init__(self):
+        self.iter_progress_bar = None
+        self.step_progress_bar = None
+        self.start_position = 0
+        self.total_iter = 0
+
+    def on_train_begin(self):
+        pass
+        
+    def on_iter_begin(self, total_iter, logs=None):
+        if self.iter_progress_bar is None:
+            self.iter_progress_bar = tqdm(total=total_iter, desc='Iteration', position=self.start_position, leave=False)
+        if self.step_progress_bar is not None:
+            self.step_progress_bar.reset()
+
+    def on_step_begin(self, total_step, logs=None):
+        if self.step_progress_bar is None:
+            self.step_progress_bar = tqdm(total=total_step, desc="Step", position=self.start_position + 1, leave=False)
+        
+    def on_step_end(self, total_step, logs=None):
+        self.step_progress_bar.update(1)
+
+    def on_iter_end(self, i, logs=None):
+        if self.iter_progress_bar is not None:
+            self.iter_progress_bar.update(1)
+
+    def on_train_end(self):
+        if self.step_progress_bar is not None:
+            self.step_progress_bar.close()
+            del self.step_progress_bar
+            self.step_progress_bar = None
+        if self.iter_progress_bar is not None:
+            self.iter_progress_bar.close()
+            del self.iter_progress_bar
+            self.iter_progress_bar = None
+
+class LGBMIterativeImputer(TransformerMixin):
+    def __init__(self, hparams, X_num, X_cat, targets, na_value = np.nan, hparams_dic = {}, na_value_dic = {}, 
+                 n_iter = 2, validation_fraction = 0, progress_callback=ImputerProgressBar()):
+        self.hparams = hparams
+        self.X_num = X_num
+        self.X_cat = X_cat
+        self.targets = targets
+        self.na_value = na_value
+        self.hparams_dic = hparams_dic
+        self.na_value_dic = na_value_dic
+        self.n_iter = n_iter
+        self.validation_fraction = validation_fraction
+        self.models_ = None
+        self.hist_ = None
+        self.progress_callback = progress_callback
+
+    def fit(self, X, y = None):
+        self.models_ = list()
+        self.hist_ = list()
+        self.progress_callback.on_train_begin()
+        for i in range(self.n_iter):
+            self.progress_callback.on_iter_begin(self.n_iter)
+            self.partial_fit(X, y)
+            self.progress_callback.on_iter_end(i)
+        self.progress_callback.on_train_end()
+        return self
+
+    def partial_fit(self, X, y = None):
+        if self.models_ is None:
+            self.models_ = list()
+            self.hist_ = list()
+        if len(self.models_) >= self.n_iter:
+            return self
+        round_1 = list()
+        round_hist = list()
+        X_ = X.copy()
+        self.progress_callback.on_step_begin(len(self.targets))
+        for target in self.targets:
+            val = [i for i in X.columns if i != target]
+            hparams = self.hparams_dic.get(target, self.hparams)
+            na_value = self.na_value_dic.get(target, self.na_value)
+            if target in self.X_cat:
+                round_1.append(
+                    lgb.LGBMClassifier(verbose = - 1, **hparams)
+                )
+                if self.validation_fraction <= 0:
+                    X_train = X_.loc[X_[target] != na_value]
+                    X_test = None
+                else:
+                    X_train, X_test = X_.loc[X_[target] != na_value].pipe(
+                        lambda x: train_test_split(x, test_size = self.validation_fraction, random_state = 123, stratify = x[target])
+                    )
+            else:
+                round_1.append(
+                    lgb.LGBMRegressor(verbose = -1, **hparams)
+                )
+                if self.validation_fraction <= 0:
+                    X_train = X_.loc[X_[target] != na_value]
+                    X_test = None
+                else:
+                    X_train, X_test = X_.loc[X_[target] != na_value].pipe(
+                        lambda x: train_test_split(x, test_size = self.validation_fraction, random_state = 123)
+                    )
+            round_1[-1].fit(X_train[val], X_train[target])
+            X_.loc[X_[target] == na_value, target] = round_1[-1].predict(X_.loc[X[target] == na_value, val])
+            if X_test is not None:
+                if target in self.X_cat:
+                    round_hist.append(
+                        accuracy_score(X_test[target], round_1[-1].predict(X_test[val]))
+                    )
+                else:
+                    round_hist.append(
+                        mean_squared_score(X_test[target], round_1[-1].predict(X_test[val]))
+                    )
+            self.progress_callback.on_step_end(len(self.targets))
+        self.models_.append(round_1)
+        self.hist_.append(round_hist)
+        del X_
+        return self
+    
+    def transform(self, X, n_iter = None):
+        if n_iter is None:
+            n_iter = len(self.models_)
+        X_ = X.copy()
+        for i, round_1 in enumerate(self.models_):
+            if i >= n_iter:
+                break
+            for target, m in zip(self.targets, round_1):
+                na_value = self.na_value_dic.get(target, self.na_value)
+                val = [i for i in X.columns if i != target]
+                X_.loc[X[target] == na_value, target] = m.predict(X_.loc[X[target] ==  na_value, val])
+        return X_[self.targets]
+
+    def get_params(self, deep=True):
+        return {
+            'hparams':  hparams,
+            'X_num': X_num,
+            'X_cat': X_cat,
+            'targets': targets,
+            'na_value': na_value,
+            'hparams_dic': hparams_dic,
+            'na_value_dic': na_value_dic,
+            'n_iter': n_iter,
+            'validate_fraction': validate_fraction
+        }
+    
     def set_output(self, transform='pandas'):
         pass
 
