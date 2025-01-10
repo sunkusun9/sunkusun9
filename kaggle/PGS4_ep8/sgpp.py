@@ -115,6 +115,30 @@ class FrequencyEncoder(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return list(self.freq_.keys())
 
+class CatCombiner(TransformerMixin):
+    def __init__(self, combine_features):
+        self.combine_features = combine_features
+
+    def fit(self, X, y = None):
+        return self
+        
+    def transform(self, X):
+        return pd.concat([
+            dproc.combine_cat(X[i]).rename(j)
+            for i, j in self.combine_features
+        ], axis = 1)
+    
+    def get_params(self, deep=True):
+        return {
+            "combine_features": self.combine_features, 
+        }
+
+    def set_output(self, transform='pandas'):
+        pass
+
+    def get_feature_names_out(self, X = None):
+        return [i for _, i in self.combine_features]
+
 
 class CombineTransformer(TransformerMixin):
     def __init__(self, transformers, target = None, label_transformer = None):
