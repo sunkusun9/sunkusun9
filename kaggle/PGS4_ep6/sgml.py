@@ -874,13 +874,17 @@ class CVModel:
         model_ = adapter.load_model(os.path.join(path,  name + '.model'))
         return preprocessor_, model_
     
-    def load(self, path, name):
-        obj = joblib.load(f, os.path.join(path,  name + '.cv'))
-        cv_obj = CVModel(path, name, obj['sp'], obj['config'], obj['adapter'])
-        cv_obj.cv_results_ = obj['cv_results_']
-        cv_obj.cv_best_ = obj['cv_best_']
-        cv_obj.train_ = obj['train_']
-        return cv_obj
+    def load(self):
+        obj = joblib.load(os.path.join(self.path,  self.name + '.cv'))
+        self.cv_results_ = obj['cv_results_']
+        self.cv_best_ = obj['cv_best_']
+        self.train_ = obj['train_']
+        return self
+
+    def load_if_exists(self):
+        if os.path.exists(os.path.join(self.path,  self.name + '.cv')):
+            self.load()
+        return self
                        
     def save(self):
         joblib.dump({
