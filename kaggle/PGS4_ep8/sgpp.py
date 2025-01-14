@@ -115,30 +115,6 @@ class FrequencyEncoder(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return list(self.freq_.keys())
 
-class CatCombiner(TransformerMixin):
-    def __init__(self, combine_features):
-        self.combine_features = combine_features
-
-    def fit(self, X, y = None):
-        return self
-        
-    def transform(self, X):
-        return pd.concat([
-            dproc.combine_cat(X[i]).rename(j)
-            for i, j in self.combine_features
-        ], axis = 1)
-    
-    def get_params(self, deep=True):
-        return {
-            "combine_features": self.combine_features, 
-        }
-
-    def set_output(self, transform='pandas'):
-        pass
-
-    def get_feature_names_out(self, X = None):
-        return [i for _, i in self.combine_features]
-
 
 class CombineTransformer(TransformerMixin):
     def __init__(self, transformers, target = None, label_transformer = None):
@@ -148,6 +124,8 @@ class CombineTransformer(TransformerMixin):
         self._get_features()
         
     def _get_features(self):
+        if len(self.transformers) == 0:
+            return
         df_vars = pd.concat([
             pd.Series(t.get_feature_names_out()).str.split('__', expand = True).rename(columns = lambda x: x + 1).pipe(
                 lambda x: pd.concat([pd.Series(n, index = x.index, name = 'name'), x], axis=1)
@@ -200,7 +178,41 @@ class CombineTransformer(TransformerMixin):
             i.transform(X).rename(columns = self.df_vars_.loc[(name, ), ['org', 'rename']].set_index('org')['rename'])
             for name, i in self.transformers
         ] + lbl, axis=1)
+    def append(self, name, transformer):
+        for i in self.transformers:
+            if i[0] == name:
+                del i
+                break
+        self.transformers.append((name, transformer))
+        self._get_features()
 
+    def clear(self):
+        self.transformers = list()
+        self._get_featues()
+
+class CatCombiner(TransformerMixin):
+    def __init__(self, combine_features):
+        self.combine_features = combine_features
+
+    def fit(self, X, y = None):
+        return self
+        
+    def transform(self, X):
+        return pd.concat([
+            dproc.combine_cat(X[i]).rename(j)
+            for i, j in self.combine_features
+        ], axis = 1)
+    
+    def get_params(self, deep=True):
+        return {
+            "combine_features": self.combine_features, 
+        }
+
+    def set_output(self, transform='pandas'):
+        pass
+
+    def get_feature_names_out(self, X = None):
+        return [i for _, i in self.combine_features]
 
 class LGBMImputer(TransformerMixin):
     def __init__(self, lgb_model, hparams, X_num, X_cat, target, na_value = np.nan):
@@ -387,3 +399,34 @@ class LGBMIterativeImputer(TransformerMixin):
 
     def get_feature_names_out(self, X = None):
         return [target]
+
+
+class CatArrangerDic(TransformerMixin):
+    def __init__(self, dic):
+        self.dic = dic
+
+    def fit(self, X, y = None):
+        self.repl_dic_ = {
+            i: {j: self.dic.get(j, j) for j in X[i].unique()}
+            for i in X.columns
+        }
+        return self
+        
+    def transform(self, X):
+        return pd.DataFrame(
+            pd.concat([
+                dproc.replace_cat(X.loc[X[k].notna(), k], v).rename(k)
+                for k, v in self.repl_dic_.items()
+            ], axis=1), index = X.index
+        )
+
+    def get_params(self, deep=True):
+        return {
+            "dic": self.dic
+        }
+
+    def set_output(self, transform='pandas'):
+        pass
+
+    def get_feature_names_out(self, X = None):
+        return list(self.repl_dic_.keys())
