@@ -46,14 +46,13 @@ class CatArrangerFreq(TransformerMixin):
 
         if self.min_frequency > 0:
             c = {
-                i: X[i].value_counts().pipe(lambda x: x.loc[x >= self.min_frequency]).index.tolist() + c[i]
+                i: c[i] + X[i].value_counts().pipe(lambda x: x.loc[(x >= self.min_frequency) & ~x.index.isin(c[i])]).index.tolist()
                 for i in X.columns
             }
         else:
             c = {
-                i: X[i].unique().tolist() + c[i] for i in X.columns
+                i: c[i] + X[i].loc[~X[i].isin(c[i])].unique().tolist() for i in X.columns
             }
-
         self.c_types_ = {
             i: pd.CategoricalDtype(c[i]) for i in X.columns
         }
@@ -115,81 +114,6 @@ class FrequencyEncoder(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return list(self.freq_.keys())
 
-
-class CombineTransformer(TransformerMixin):
-    def __init__(self, transformers, target = None, label_transformer = None):
-        self.transformers = list(transformers)
-        self.target = target
-        self.label_transformer = label_transformer
-        self._get_features()
-        
-    def _get_features(self):
-        if len(self.transformers) == 0:
-            return
-        df_vars = pd.concat([
-            pd.Series(t.get_feature_names_out()).str.split('__', expand = True).rename(columns = lambda x: x + 1).pipe(
-                lambda x: pd.concat([pd.Series(n, index = x.index, name = 'name'), x], axis=1)
-            )
-            for n, t in self.transformers
-        ], axis = 0).reset_index(drop=True).assign(
-            rename = ''
-        )
-        df_vars2 = df_vars.iloc[:, :-1].copy()
-        while (df_vars2.shape[1] >= 1) & (df_vars2.shape[0] > 0):
-            s_idx = df_vars2.groupby(df_vars2.iloc[:, -1]).transform('size') == 1
-            if s_idx.sum() > 0:
-                df_vars.loc[s_idx.loc[s_idx].index.values, 'rename'] = df_vars2.loc[s_idx].iloc[:, -1]
-                df_vars2 = df_vars2.loc[~s_idx]
-            a = df_vars2.iloc[:, -2:]
-            df_vars2 = df_vars2.drop(columns = a.columns)
-            if len(df_vars2) == 0:
-                break
-            df_vars2.insert(
-                df_vars2.shape[1], 1, a.apply(lambda x: x.dropna().str.cat(sep='__'), axis=1)
-            )
-            
-        self.df_vars_ = df_vars.join(
-            pd.concat([
-                pd.Series(t.get_feature_names_out(), name='org')
-                for _, t in self.transformers
-            ]).reset_index(drop=True)
-        ).set_index(['name', 1, 2]).sort_index()
-
-    def get_vars_list(self):
-        return self.df_vars_
-
-    def get_vars(self, name = None):
-        if name is None:
-            return self.df_vars_['rename'].tolist()
-        return self.df_vars_.loc[name, 'rename'].tolist()
-
-    def fit(self, X, y = None):
-        for _, i in self.transformers:
-            i.fit(X, y)
-        if self.target is not None and self.target in X.columns:
-            self.label_transformer.fit(X[self.target])
-        self._get_features()
-    
-    def transform(self, X):
-        lbl = [] if self.target is None or self.target not in X.columns else [
-            pd.Series(self.label_transformer.transform(X[self.target]), index=X.index, name=self.target) if self.label_transformer is not None else X[self.target]
-        ]
-        return pd.concat([
-            i.transform(X).rename(columns = self.df_vars_.loc[(name, ), ['org', 'rename']].set_index('org')['rename'])
-            for name, i in self.transformers
-        ] + lbl, axis=1)
-    def append(self, name, transformer):
-        for i in self.transformers:
-            if i[0] == name:
-                del i
-                break
-        self.transformers.append((name, transformer))
-        self._get_features()
-
-    def clear(self):
-        self.transformers = list()
-        self._get_featues()
-
 class CatCombiner(TransformerMixin):
     def __init__(self, combine_features):
         self.combine_features = combine_features
@@ -213,6 +137,155 @@ class CatCombiner(TransformerMixin):
 
     def get_feature_names_out(self, X = None):
         return [i for _, i in self.combine_features]
+
+class CombineTransformer(TransformerMixin):
+    def __init__(self, transformers, target = None, label_transformer = None):
+        self.transformers = list(transformers)
+        self.target = target
+        self.label_transformer = label_transformer
+        self._get_features()
+        
+    def _get_features(self):
+        if len(self.transformers) == 0:
+            return
+        df_vars = pd.concat([
+            pd.Series(t if type(t) == list else t.get_feature_names_out()).str.split('__', expand = True).rename(columns = lambda x: x + 1).pipe(
+                lambda x: pd.concat([pd.Series(n, index = x.index, name = 'name'), x], axis=1)
+            )
+            for n, t in self.transformers
+        ], axis = 0).reset_index(drop=True)
+        
+        self.df_vars_ = df_vars.join(
+            pd.concat([
+                pd.Series(t if type(t) == list else t.get_feature_names_out(), name='org')
+                for _, t in self.transformers
+            ]).reset_index(drop=True)
+        ).set_index(df_vars.columns[:-1].tolist()).sort_index()
+
+    def get_vars_list(self):
+        return self.df_vars_
+
+    def get_vars(self, name = None):
+        if name is None:
+            return self.df_vars_['org'].tolist()
+        return self.df_vars_.loc[name, 'org'].tolist()
+
+    def fit(self, X, y = None):
+        for _, i in self.transformers:
+            if type(i) == list:
+                continue
+            i.fit(X, y)
+        if self.target is not None and self.target in X.columns:
+            self.label_transformer.fit(X[self.target])
+        self._get_features()
+    
+    def transform(self, X):
+        lbl = [] if self.target is None or self.target not in X.columns else [
+            pd.Series(self.label_transformer.transform(X[self.target]), index=X.index, name=self.target) if self.label_transformer is not None else X[self.target]
+        ]
+        return pd.concat([
+            (X[i] if type(i) == list else i.transform(X))
+            for name, i in self.transformers
+        ] + lbl, axis=1)
+
+    def append(self, name, transformer, X = None):
+        for i, t in enumerate(self.transformers):
+            if t[0] == name:
+                del self.transformers[i]
+                break
+        self.transformers.append((name, transformer))
+        self._get_features()
+        if X is None:
+            return None
+        
+        if type(transformer) == list:
+            return X[transformer]
+        else:
+            return transformer.transform(X)
+
+    def clear(self):
+        self.transformers = list()
+        self._get_featues()
+    
+    def set_output(self, transform='pandas'):
+        pass
+
+    def get_feature_names_out(self, X = None):
+        return self.get_vars()
+
+class AttachTransformer(TransformerMixin):
+    def __init__(self, body_transformer, transformers):
+        self.body_transformer = body_transformer
+        self.transformers = list(transformers)
+        self._get_features()
+        
+    def _get_features(self):
+        if len(self.transformers) == 0:
+            return
+        df_vars = pd.concat([
+            pd.Series(t if type(t) == list else t.get_feature_names_out()).str.split('__', expand = True).rename(columns = lambda x: x + 1).pipe(
+                lambda x: pd.concat([pd.Series(n, index = x.index, name = 'name'), x], axis=1)
+            )
+            for n, t in self.body_transformer.transformers + self.transformers
+        ], axis = 0).reset_index(drop=True)
+
+        self.df_vars_ = df_vars.join(
+            pd.concat([
+                pd.Series(t if type(t) == list else t.get_feature_names_out(), name='org')
+                for _, t in self.body_transformer.transformers + self.transformers
+            ]).reset_index(drop=True)
+        ).set_index(df_vars.columns[:-1].tolist()).sort_index()
+
+    def get_vars_list(self):
+        return self.df_vars_
+
+    def get_vars(self, name = None):
+        if name is None:
+            return self.df_vars_['org'].tolist()
+        return self.df_vars_.loc[name, 'org'].tolist()
+
+    def fit(self, X, y = None):
+        X = self.body_transform.fit_transform(X, y)
+        for _, i in self.transformers:
+            if type(i) == list:
+                continue
+            i.fit(X, y)
+        self._get_features()
+    
+    def transform(self, X):
+        X_ = self.body_transformer.transform(X)
+        return pd.concat(
+            [X_] + [
+            (X_[i] if type(i) == list else i.transform(X_))
+            for name, i in self.transformers
+        ], axis=1)
+
+    def append(self, name, transformer, X = None):
+        for i, t in enumerate(self.transformers):
+            if t[0] == name:
+                del self.transformers[i]
+                break
+        self.transformers.append((name, transformer))
+        self._get_features()
+        if X is None:
+            return None
+        if type(transformer) == list:
+            return X[transformer]
+        else:
+            return transformer.transform(X)
+            
+    def clear(self):
+        self.transformers = list()
+        self._get_featues()
+
+    def set_output(self, transform='pandas'):
+        pass
+
+    def get_feature_names_out(self, X = None):
+        return self.get_vars()
+
+    def refresh(self):
+        self._get_features()
 
 class LGBMImputer(TransformerMixin):
     def __init__(self, lgb_model, hparams, X_num, X_cat, target, na_value = np.nan):
@@ -430,3 +503,81 @@ class CatArrangerDic(TransformerMixin):
 
     def get_feature_names_out(self, X = None):
         return list(self.repl_dic_.keys())
+
+class CatArrangerDics(TransformerMixin):
+    def __init__(self, dics):
+        self.dics = dics
+
+    def fit(self, X, y = None):
+        self.repl_dic_ = {
+            i: {j: self.dics[i].get(j, j) for j in X[i].unique()}
+            for i in X.columns if i in self.dics
+        }
+        return self
+        
+    def transform(self, X):
+        return pd.DataFrame(
+            pd.concat([
+                dproc.replace_cat(X.loc[X[k].notna(), k], v).rename(k)
+                for k, v in self.repl_dic_.items()
+            ] + [X[i] for i in X.columns if i not in self.dics], axis=1), index = X.index
+        )
+
+    def get_params(self, deep=True):
+        return {
+            "dics": self.dics
+        }
+
+    def set_output(self, transform='pandas'):
+        pass
+
+    def get_feature_names_out(self, X = None):
+        return list(self.repl_dic_.keys())
+
+class EvalTransformer(TransformerMixin):
+    def __init__(self, expressions, local_dict = None):
+        self.expressions = expressions
+        self.local_dict = local_dict
+
+    def fit(self, X, y = None):
+        return self
+    
+    def transform(self, X):
+        return pd.concat([
+            X.eval(j, local_dict = self.local_dict).rename(i)
+            for i, j in self.expressions
+        ], axis=1)
+
+    def get_params(self, deep=True):
+        return {
+            'expressions': self.expressions, 
+            'local_dict': self.local_dict
+        }
+
+    def set_output(self, transform='pandas'):
+        pass
+
+    def get_feature_names_out(self, X = None):
+        return [i for i, _ in self.expressions]
+
+class TypeTransformer(TransformerMixin):
+    def __init__(self, dtype):
+        self.dtype = dtype
+
+    def fit(self, X, y = None):
+        self.names_ = X.columns.tolist()
+        return self
+
+    def transform(self, X):
+        return X.astype(self. dtype)
+
+    def get_params(self, deep=True):
+        return {
+            'dtype': self.dtype, 
+        }
+
+    def set_output(self, transform='pandas'):
+        pass
+
+    def get_feature_names_out(self, X = None):
+        return self.names_
