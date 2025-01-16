@@ -109,7 +109,7 @@ def create_model(inp, o, config, embedding = None,
                 X_inp[k] = tf.keras.Input(dtype=ord_dtype, shape=(v[1], ), name=k)
                 X_cat.append(X_inp[k])
             elif v[0] == 'emb':
-                X_inp[k] =tf.keras.Input(dtype=tf.int32, shape=(v[3], ), name=k)
+                X_inp[k] = tf.keras.Input(dtype=tf.int32, shape=(v[3], ), name=k)
                 if v[4] > 0 and v[5] > 0:
                     kreg = tf.keras.regularizers.L1L2(v[4], v[5])
                 elif v[4] > 0:
@@ -118,8 +118,8 @@ def create_model(inp, o, config, embedding = None,
                     kreg = tf.keras.regularizers.L2(v[5])
                 else:
                     kreg = None
-                X_emb = tf.keras.layers.Embedding(v[1], v[2], embeddings_regularizer = kreg,
-                                                  dtype=cont_dtype, name=k+'_emb')(X_inp[k])
+                X_emb = tf.keras.layers.Embedding(v[1] + 1, v[2], embeddings_regularizer = kreg,
+                                                  dtype=cont_dtype, name=k+'_emb')(X_inp[k] + 1)
                 X_emb = tf.keras.layers.Reshape((v[2] * v[3],), name=k + '_reshape_emb')(X_emb)
                 X_cat.append(X_emb)
         X = tf.keras.layers.Concatenate(axis=-1, name='concat_inputs')(X_cat)
@@ -200,6 +200,7 @@ def get_input(X, ordinal = None, embedding = None, **argv):
     else:
         inp = X.shape[1]
     return inp
+
 def create_dataset(X, y=None, sample_weights=None, ordinal=None, embedding=None):
     output_ = None
     if ordinal is not None or embedding is not None:
@@ -545,12 +546,14 @@ class NNEstimator(BaseEstimator):
         return predict_tf_model(self.model_, X, self.to_tf_dataset, batch_size=self.batch_size, **argv)
 
     def get_obj(self):
-        return None
+        return {
+            'transformer': self.transformer_
+        }
 
     def set_obj(self, o):
         self.classes_ = None
         self.is_binary = False
-        pass
+        self.transformer_ = o['transformer']
 
 class NNClassifier(ClassifierMixin, NNEstimator):
     def fit(self, X, y, **argv):
@@ -590,11 +593,14 @@ class NNClassifier(ClassifierMixin, NNEstimator):
         return {
             'le': self.le_,
             'classes': self.classes_,
+            **super().get_obj()
         }
 
     def set_obj(self, o):
+        super().set_obj(o)
         self.le_ = o['le']
         self.classes_ = o['classes']
+        self.is_binary = len(self.classes_) == 2
 
 class NNRegressor(NNEstimator, RegressorMixin):
     def fit(self, X, y, **argv):
@@ -638,7 +644,7 @@ def load_model(filename, m):
     model = m(**d)
     model.set_obj(o)
     if model.model is None:
-        model.model_ = sgnn.create_model(
+        model.model_ = create_model(
             inp = inp,
             proba=model.classes_ is not None, 
             o=1 if model.classes_ is None or model.is_binary else len(model.classes_),
