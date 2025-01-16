@@ -656,10 +656,15 @@ def stack_cv(cv_list, y):
             i.cv_best_['prd'].rename(columns=lambda x: '{}_{}'.format(i.name, x)) for i in cv_list
         ] + [y], axis = 1, join = 'inner')
 
-def stack_prd(cv_list, df, config):
-    return pd.concat([
-        i.get_predictor()(df).rename(i.name) for i in cv_list
-    ], axis=1)
+def stack_prd(cv_list, df, config, df_merge = None):
+    if df_merge is None:
+        return pd.concat([
+            i.get_predictor()(df).rename(i.name) for i in cv_list
+        ], axis=1)
+    return pd.concat(
+        [df_merge] + [
+            i.get_predictor()(df).rename(i.name) for i in cv_list if i not in df_merge.columns
+        ], axis=1)
 
 class BaseAdapter():
     def save_model(self, filename, model):
