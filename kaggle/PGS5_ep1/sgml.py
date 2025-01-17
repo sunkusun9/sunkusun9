@@ -7,8 +7,6 @@ from sklearn.pipeline import make_pipeline
 from sklearn.model_selection import train_test_split
 
 import joblib
-import dill
-import pickle as pkl
 import numpy as np
 import pandas as pd
 import gc
@@ -658,10 +656,15 @@ def stack_cv(cv_list, y):
             i.cv_best_['prd'].rename(columns=lambda x: '{}_{}'.format(i.name, x)) for i in cv_list
         ] + [y], axis = 1, join = 'inner')
 
-def stack_prd(cv_list, df, config):
-    return pd.concat([
-        i.get_predictor()(df).rename(i.name) for i in cv_list
-    ], axis=1)
+def stack_prd(cv_list, df, config, df_merge = None):
+    if df_merge is None:
+        return pd.concat([
+            i.get_predictor()(df).rename(i.name) for i in cv_list
+        ], axis=1)
+    return pd.concat(
+        [df_merge] + [
+            i.get_predictor()(df).rename(i.name) for i in cv_list if i not in df_merge.columns
+        ], axis=1)
 
 class BaseAdapter():
     def save_model(self, filename, model):
@@ -698,6 +701,7 @@ class LGBMAdapter(BaseAdapter):
                 validation_splitter = argv.get('validation_splitter')(validation_fraction)
         else:
             validation_splitter = None
+            
         return {
             'model': self.model, 
             'model_params': {'verbose': -1, **hparams['model_params']},
@@ -799,8 +803,8 @@ class CVModel:
         self.path = path
         self.name = name
         self.sp = sp
-        self.adapter = adapter
         self.config = config
+        self.adapter = adapter
         self.cv_results_ = dict()
         self.cv_best_= {
             'score': -np.inf, 'hparams': {}, 'prd': None, 'k': ''
@@ -875,28 +879,21 @@ class CVModel:
         model_ = adapter.load_model(os.path.join(path,  name + '.model'))
         return preprocessor_, model_
     
-    def load(path, name):
-        with open(os.path.join(path,  name + '.cv'), 'rb') as f:
-            obj = dill.load(f)
-        cv_obj = CVModel(path, name, obj['sp'], obj['config'], obj['adapter'])
-        cv_obj.cv_results_ = obj['cv_results_']
-        cv_obj.cv_best_ = obj['cv_best_']
-        cv_obj.train_ = obj['train_']
-        return cv_obj
+    def load(self):
+        obj = joblib.load(os.path.join(self.path,  self.name + '.cv'))
+        self.cv_results_ = obj['cv_results_']
+        self.cv_best_ = obj['cv_best_']
+        self.train_ = obj['train_']
+        return self
 
-    def load_or_create(path, name, sp, config, adapter):
-        if os.path.exists(os.path.join(path,  name + '.cv')):
-            return CVModel.load(path, name)
-        else:
-            return CVModel(path, name, sp, config, adapter)
+    def load_if_exists(self):
+        if os.path.exists(os.path.join(self.path,  self.name + '.cv')):
+            self.load()
+        return self
                        
     def save(self):
-        with open(os.path.join(self.path,  self.name + '.cv'), 'wb') as f:
-            dill.dump({
-                'adapter': self.adapter,
-                'sp': self.sp,
-                'config': self.config,
-                'cv_results_': self.cv_results_,
-                'cv_best_': self.cv_best_,
-                'train_': self.train_
-            }, f)
+        joblib.dump({
+            'cv_results_': self.cv_results_,
+            'cv_best_': self.cv_best_,
+            'train_': self.train_
+        }, os.path.join(self.path,  self.name + '.cv'))

@@ -1,8 +1,7 @@
 from IPython.display import Image
 import os
 import matplotlib.pyplot as plt
-import pickle as pkl
-import dill
+import joblib
 
 class SGCache:
     def __init__(self, img_path, result_path):
@@ -71,14 +70,12 @@ class SGCache:
         >>> sc = SGCache('img', 'result')
         >>> s_sum_by_grp = sc.cache_result('sum_by_grp', lambda : df.groupby('grp')['value'].sum() , rerun=False)
         """
-        result_file_name = os.path.join(self.result_path, result_name + '.pkl')
+        result_file_name = os.path.join(self.result_path, result_name + '.joblib')
         if not os.path.exists(result_file_name) or rerun:
             result = result_func()
             if result is None:
                 return
-            with open(result_file_name, 'wb') as f:
-                dill.dump(result, f)
+            joblib.dump(result, result_file_name)
         else:
-            with open(result_file_name, 'rb') as f:
-                result = dill.load(f)
+            result = joblib.load(result_file_name)
         return result
