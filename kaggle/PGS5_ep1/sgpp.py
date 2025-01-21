@@ -665,3 +665,31 @@ class PandasCoverter(TransformerMixin):
 
     def get_feature_names_out(self, X = None):
         return self.columns_
+
+
+class JoinEncoder(TransformerMixin):
+    def __init__(self, data, on = None):
+        self.data = data
+        self.on = on
+    def fit(self, X, y = None):
+        self.features = X.columns.tolist()
+        if type(self.data) == pd.Series:
+            self.features.append(self.data.name)
+        else:
+            self.features.extend(self.data.columns.tolist())
+        return self
+    def transform(self, X):
+        return X.join(
+            self.data, on = self.on
+        )
+    def get_params(self, deep = True):
+        return {
+            'data': self.data,
+            'on': self.on
+        }
+        
+    def set_output(self, transform = 'pandas'):
+        pass
+
+    def get_featrue_names_out(self, X = None):
+        return self.features

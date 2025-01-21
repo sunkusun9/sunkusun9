@@ -484,7 +484,6 @@ def train_model(model, model_params, df_train, X, y, valid_splitter=None, prepro
         model_params_2, fit_params_2 = {}, {}
     result['train_shape'] = X_train.shape
     result['target'] = y
-    result['target_func'] = target_func
     m =  model(**model_params, **model_params_2)
     m.fit(X_train, y_train, **fit_params, **fit_params_2)
     del X_train, y_train
@@ -719,9 +718,8 @@ class LGBMAdapter(BaseAdapter):
         }
 
 class XGBAdapter(BaseAdapter):
-    def __init__(self, model, target_func=None):
+    def __init__(self, model):
         self.model = model
-        self.target_func = target_func
 
     def adapt(self, hparams, is_train=False, **argv):
         X, _, transformers = get_cat_transformers_ohe(hparams)
@@ -748,7 +746,6 @@ class XGBAdapter(BaseAdapter):
                 'fit_params': {'verbose': False}
             },
             'result_proc': argv.get('result_proc', xgb_learning_result),
-            'target_func': argv.get('target_func', self.target_func)
         }
 
 class CBAdapter(BaseAdapter):
