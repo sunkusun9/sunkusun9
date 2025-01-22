@@ -14,6 +14,51 @@ try:
 except:
     from tqdm import tqdm
 
+class ApplyWrapper(TransformerMixin):
+    def __init__(self, transformer, vals, suffix = None, postfix = None):
+        self.vals = vals
+        self.transformer = transformer
+        self.suffix = suffix
+        self.postfix = postfix
+
+    def fit(self, X, y = None):
+        self.transformer.fit(X[self.vals], y)
+        return self
+
+    def transform(self, X):
+        if self.suffix is None and self.postfix is None:
+            return X.drop(columns = self.vals).join(
+                self.transformer.transform(X[self.vals])
+            )
+        if self.suffix is not None:
+            return X.join(
+                self.transformer.transform(X).rename(columns = lambda x: self.suffix + x)
+            )
+        if self.postfix is not None:
+            X.join(
+                self.transformer.transform(X).rename(columns = lambda x: x + self.postfix)
+            )
+        return X
+    
+    def get_params(self, deep=True):
+        return {
+            "vals": self.vals, 
+            "transformer": self.transformer,
+            "suffix": self.suffix,
+            "postfix": self.postfix
+        }
+
+    def set_output(self, transform='pandas'):
+        pass
+
+    def get_feature_names_out(self, X = None):
+        vals = self.vals.copy()
+        if self.suffix is not None:
+            vals = [self.suffix + i for i in self.vals]
+        if self.postfix is not None:
+            vals = [i + self.postfix for i in self.vals]
+        return vals
+        
 class CatArrangerFreq(TransformerMixin):
     def __init__(self, min_frequency, unknown_value = None, na_value = None):
         self.min_frequency = min_frequency
@@ -608,7 +653,7 @@ class PolarsProcessor(TransformerMixin):
     def set_output(self, transform = 'polars'):
         pass
 
-    def get_featrue_names_out(self, X = None):
+    def get_feature_names_out(self, X = None):
         return self.pl_type
     
 class ExprProcessor(TransformerMixin):
@@ -691,5 +736,5 @@ class JoinEncoder(TransformerMixin):
     def set_output(self, transform = 'pandas'):
         pass
 
-    def get_featrue_names_out(self, X = None):
+    def get_feature_names_out(self, X = None):
         return self.features
