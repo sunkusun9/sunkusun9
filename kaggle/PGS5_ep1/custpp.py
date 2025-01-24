@@ -78,3 +78,6 @@ class RatioEncoder(TransformerMixin):
 
     def get_feature_names_out(self, X = None):
         return self.features_
+
+    def __str__(self):
+        return "RatioEncoder"
