@@ -55,8 +55,8 @@ class RatioEncoder(TransformerMixin):
             ], axis = 1
         ).assign(
             y_2 = lambda x: x['year'] % 2,
-            ratio = lambda x: x.groupby(['year', 'md', 'product'], observed=False)['num_sold'].transform('sum')\
-                             / x.groupby(['year', 'md'], observed=False)['num_sold'].transform('sum')
+            ratio = lambda x: x.groupby(['year', 'md', 'product'], observed=False)[y.name].transform('sum')\
+                             / x.groupby(['year', 'md'], observed=False)[y.name].transform('sum')
         ).groupby(['y_2', 'md', 'product'], observed=False)['ratio'].mean()
         self.features_ = X.columns.tolist() + ['product_ratio']
         return self
