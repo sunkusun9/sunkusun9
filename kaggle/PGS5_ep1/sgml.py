@@ -18,12 +18,15 @@ try:
 except:
     from tqdm import tqdm
 
-def get_X_from_transformer(transformers):
+def get_X_from_transformer(transformers, ex = None):
     X = list()
     for i in transformers:
         X.extend(i[-1])
     X = list(set(X))
-    return X
+    if ex is None:
+        return X
+    else:
+        return [i for i in X if i not in ex]
 
 def get_ohe_transformer(hparams):
     if 'X_ohe' in hparams:
@@ -97,9 +100,10 @@ def get_transformers(hparams):
         transformer = proc(hparams)
         if transformer is not None:
             transformers.append(transformer)
-    X_num = hparams.get('X_num', [])
-    transformers.append(('pt', 'passthrough', X_num))
-    X = get_X_from_transformer(transformers)
+    X_num = hparams.get('X_num', []) + hparams.get('X_pre_out', [])
+    if len(X_num) > 0:
+        transformers.append(('pt', 'passthrough', X_num))
+    X = get_X_from_transformer(transformers, hparams.get('X_pre_out', None))
     return X, [], transformers
 
 def get_cat_transformers_ord(hparams):
@@ -110,7 +114,7 @@ def get_cat_transformers_ord(hparams):
         X_cat_feature = np.arange(0, len(X_cat)).tolist()
     else:
         X_cat_feature = []
-    return get_X_from_transformer(transformers), X_cat_feature, transformers
+    return get_X_from_transformer(transformers, hparams.get('X_pre_out', None)), X_cat_feature, transformers
 
 def get_ord_transformer(hparams):
     if 'X_ord' in hparams:
@@ -130,14 +134,14 @@ def get_cat_transformers_pt(hparams):
             X_cat_feature = list()
         X_cat_feature = X_cat_feature + ['ord__{}'.format(i) for i in hparams['X_ord']]
         
-    return get_X_from_transformer(transformers), X_cat_feature, transformers
+    return get_X_from_transformer(transformers, hparams.get('X_pre_out', None)), X_cat_feature, transformers
 
 def get_cat_transformers_ohe(hparams):
     X, _, transformers = get_transformers(hparams)
     X_cat = hparams.get('X_cat', [])
     if len(X_cat) > 0:
         transformers = [('cat', OneHotEncoder(**hparams.get('ohe', {})), X_cat)] + transformers
-    return get_X_from_transformer(transformers), [], transformers
+    return get_X_from_transformer(transformers, hparams.get('X_pre_out', None)), [], transformers
 
 def is_empty_transformer(transformers):
     return transformers is None or len(transformers) == 0 or (len(transformers) == 1 and transformers[0][1] == 'passthrough')
@@ -484,7 +488,6 @@ def train_model(model, model_params, df_train, X, y, valid_splitter=None, prepro
         model_params_2, fit_params_2 = {}, {}
     result['train_shape'] = X_train.shape
     result['target'] = y
-    result['target_func'] = target_func
     m =  model(**model_params, **model_params_2)
     m.fit(X_train, y_train, **fit_params, **fit_params_2)
     del X_train, y_train
@@ -679,11 +682,17 @@ class SklearnAdapter(BaseAdapter):
 
     def adapt(self, hparams, is_train=False, **argv):
         X, _, transformers = get_transformers(hparams)
+        preprocessor = hparams.get('preprocessor', None)
+        if preprocessor is None:
+            preprocessor = ColumnTransformer(transformers) if not is_empty_transformer(transformers) else None
+        else:
+            X = X + hparams.get('X_pre', [])
+            preprocessor = make_pipeline(preprocessor, ColumnTransformer(transformers)) if not is_empty_transformer(transformers) else preprocessor
         return {
             'model': self.model,
             'model_params': hparams.get('model_params', {}),
             'X': X,
-            'preprocessor': ColumnTransformer(transformers) if not is_empty_transformer(transformers) else None,
+            'preprocessor': preprocessor,
             'result_proc': argv.get('result_proc', None)
         }
 
@@ -701,12 +710,17 @@ class LGBMAdapter(BaseAdapter):
                 validation_splitter = argv.get('validation_splitter')(validation_fraction)
         else:
             validation_splitter = None
-            
+        preprocessor = hparams.get('preprocessor', None)
+        if preprocessor is None:
+            preprocessor = ColumnTransformer(transformers) if not is_empty_transformer(transformers) else None
+        else:
+            X = X + hparams.get('X_pre', [])
+            preprocessor = make_pipeline(preprocessor, ColumnTransformer(transformers)) if not is_empty_transformer(transformers) else preprocessor
         return {
             'model': self.model, 
             'model_params': {'verbose': -1, **hparams['model_params']},
             'X': X,
-            'preprocessor': ColumnTransformer(transformers) if not is_empty_transformer(transformers) else None,
+            'preprocessor': preprocessor,
             'train_params': {
                 'fit_params': {
                     'categorical_feature': X_cat_feature,
@@ -719,9 +733,8 @@ class LGBMAdapter(BaseAdapter):
         }
 
 class XGBAdapter(BaseAdapter):
-    def __init__(self, model, target_func=None):
+    def __init__(self, model):
         self.model = model
-        self.target_func = target_func
 
     def adapt(self, hparams, is_train=False, **argv):
         X, _, transformers = get_cat_transformers_ohe(hparams)
@@ -733,6 +746,12 @@ class XGBAdapter(BaseAdapter):
                 validation_splitter = argv.get('validation_splitter')(validation_fraction)
         else:
             validation_splitter = None
+        preprocessor = hparams.get('preprocessor', None)
+        if preprocessor is None:
+            preprocessor = ColumnTransformer(transformers) if not is_empty_transformer(transformers) else None
+        else:
+            X = X + hparams.get('X_pre', [])
+            preprocessor = make_pipeline(preprocessor, ColumnTransformer(transformers)) if not is_empty_transformer(transformers) else preprocessor
         return {
             'model': self.model, 
             'model_params': {
@@ -741,14 +760,13 @@ class XGBAdapter(BaseAdapter):
                 'device': argv.get('device', 'cpu')
             },
             'X': X,
-            'preprocessor': ColumnTransformer(transformers) if not is_empty_transformer(transformers) else None,
+            'preprocessor': preprocessor,
             'train_params': {
                 'valid_splitter': validation_splitter,
                 'valid_config_proc': gb_valid_config if validation_fraction > 0 or argv.get('validate_train', False) else None,
                 'fit_params': {'verbose': False}
             },
             'result_proc': argv.get('result_proc', xgb_learning_result),
-            'target_func': argv.get('target_func', self.target_func)
         }
 
 class CBAdapter(BaseAdapter):
@@ -765,8 +783,14 @@ class CBAdapter(BaseAdapter):
                 validation_splitter = argv.get('validation_splitter')(validation_fraction)
         else:
             validation_splitter = None
+
+        preprocessor = hparams.get('preprocessor', None)
+        if preprocessor is None:
+            preprocessor = ColumnTransformer(transformers).set_output(transform='pandas') if not is_empty_transformer(transformers) else None
+        else:
+            X = X + hparams.get('X_pre', [])
+            preprocessor = make_pipeline(preprocessor, ColumnTransformer(transformers).set_output(transform='pandas')) if not is_empty_transformer(transformers) else preprocessor
         task_type = argv.get('task_type', None)
-        
         if task_type != 'GPU':
             fit_params = {'callbacks': [CatBoostFitProgressbar(n_estimators=hparams['model_params'].get('n_estimators', 100))]}
             valid_config = gb_valid_config
@@ -782,7 +806,7 @@ class CBAdapter(BaseAdapter):
                 'devices': argv.get('devices', None)
             },
             'X': X,
-            'preprocessor': ColumnTransformer(transformers).set_output(transform='pandas') if not is_empty_transformer(transformers) else None,
+            'preprocessor': preprocessor,
             'train_params': {
                 'valid_splitter': validation_splitter,
                 'valid_config_proc': valid_config if validation_fraction > 0 or argv.get('validate_train', False) else None,
