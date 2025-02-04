@@ -25,18 +25,18 @@ class ApplyWrapper(TransformerMixin):
         self.transformer.fit(X[self.vals], y)
         return self
 
-    def transform(self, X):
+    def transform(self, X, **argv):
         if self.suffix is None and self.postfix is None:
-            return X.drop(columns = self.vals).join(
-                self.transformer.transform(X[self.vals])
+            return dproc.join_and_assign(
+                X, self.transformer.transform(X[self.vals])
             )
         if self.suffix is not None:
             return X.join(
-                self.transformer.transform(X).rename(columns = lambda x: self.suffix + x)
+                self.transformer.transform(X[self.vals], **argv).rename(columns = lambda x: self.suffix + x)
             )
         if self.postfix is not None:
-            X.join(
-                self.transformer.transform(X).rename(columns = lambda x: x + self.postfix)
+            return X.join(
+                self.transformer.transform(X[self.vals], **argv).rename(columns = lambda x: x + self.postfix)
             )
         return X
     
@@ -111,10 +111,14 @@ class CatArrangerFreq(TransformerMixin):
                     dproc.rearrange_cat(X[k], v, lambda d, c: 0 if c not in d else c, use_set = True).rename(k)
                     for k, v in self.c_types_.items()
                 ], axis = 1)
+                if self.na_value is not None:
+                    return ret.fillna(self.na_value)
             else:
-                ret = X
-            if self.na_value is not None:
-                return ret.fillna(self.na_value)
+                ret = pd.concat([
+                    X[k].astype(v) for k, v in self.c_types_.items()
+                ], axis = 1)
+                if self.na_value is not None:
+                    return ret.fillna(self.na_value)
             return ret
         return X
 
@@ -399,7 +403,7 @@ class ImputerProgressBar():
             self.iter_progress_bar = None
 
 class LGBMIterativeImputer(TransformerMixin):
-    def __init__(self, hparams, X_num, X_cat, targets, na_value = np.nan, hparams_dic = {}, na_value_dic = {}, 
+    def __init__(self, hparams, X_num, X_cat, targets, na_value = None, hparams_dic = {}, na_value_dic = {}, 
                  n_iter = 2, validation_fraction = 0, progress_callback=ImputerProgressBar()):
         self.hparams = hparams
         self.X_num = X_num
@@ -412,20 +416,28 @@ class LGBMIterativeImputer(TransformerMixin):
         self.validation_fraction = validation_fraction
         self.models_ = None
         self.hist_ = None
+        self.initial_cat_values_ = None
         self.progress_callback = progress_callback
 
     def fit(self, X, y = None):
         self.models_ = list()
         self.hist_ = list()
         self.progress_callback.on_train_begin()
+        X_ = X.copy()
+        if len(self.X_cat) > 0:
+            self.initial_cat_values_ = X_[self.X_cat].apply(lambda x: x.mode().iloc[0])
+            X_ = dproc.join_and_assign(
+                X_, X_[self.X_cat].fillna(self.initial_cat_values_)
+            )
         for i in range(self.n_iter):
             self.progress_callback.on_iter_begin(self.n_iter)
-            self.partial_fit(X, y)
+            self._partial_fit(X_, X)
             self.progress_callback.on_iter_end(i)
         self.progress_callback.on_train_end()
+        del X_
         return self
 
-    def partial_fit(self, X, y = None):
+    def _partial_fit(self, X, X_org):
         if self.models_ is None:
             self.models_ = list()
             self.hist_ = list()
@@ -433,21 +445,21 @@ class LGBMIterativeImputer(TransformerMixin):
             return self
         round_1 = list()
         round_hist = list()
-        X_ = X.copy()
         self.progress_callback.on_step_begin(len(self.targets))
         for target in self.targets:
-            val = [i for i in X.columns if i != target]
+            val = [i for i in self.X_num + self.X_cat if i != target]
             hparams = self.hparams_dic.get(target, self.hparams)
             na_value = self.na_value_dic.get(target, self.na_value)
+            s_tgt_notna = X_org[target].notna() if na_value is None else X_org[target] != na_value
             if target in self.X_cat:
                 round_1.append(
                     lgb.LGBMClassifier(verbose = - 1, **hparams)
                 )
                 if self.validation_fraction <= 0:
-                    X_train = X_.loc[X_[target] != na_value]
+                    X_train = X.loc[s_tgt_notna]
                     X_test = None
                 else:
-                    X_train, X_test = X_.loc[X_[target] != na_value].pipe(
+                    X_train, X_test = X.loc[s_tgt_notna].pipe(
                         lambda x: train_test_split(x, test_size = self.validation_fraction, random_state = 123, stratify = x[target])
                     )
             else:
@@ -455,14 +467,14 @@ class LGBMIterativeImputer(TransformerMixin):
                     lgb.LGBMRegressor(verbose = -1, **hparams)
                 )
                 if self.validation_fraction <= 0:
-                    X_train = X_.loc[X_[target] != na_value]
+                    X_train = X.loc[s_tgt_notna]
                     X_test = None
                 else:
-                    X_train, X_test = X_.loc[X_[target] != na_value].pipe(
+                    X_train, X_test = X.loc[s_tgt_notna].pipe(
                         lambda x: train_test_split(x, test_size = self.validation_fraction, random_state = 123)
                     )
             round_1[-1].fit(X_train[val], X_train[target])
-            X_.loc[X_[target] == na_value, target] = round_1[-1].predict(X_.loc[X[target] == na_value, val])
+            X.loc[~s_tgt_notna, target] = X.loc[~s_tgt_notna, val].pipe(lambda x: pd.Series(round_1[-1].predict(x), index = x.index, dtype = X[target].dtype))
             if X_test is not None:
                 if target in self.X_cat:
                     round_hist.append(
@@ -470,25 +482,31 @@ class LGBMIterativeImputer(TransformerMixin):
                     )
                 else:
                     round_hist.append(
-                        mean_squared_score(X_test[target], round_1[-1].predict(X_test[val]))
+                        mean_squared_error(X_test[target], round_1[-1].predict(X_test[val]))
                     )
             self.progress_callback.on_step_end(len(self.targets))
         self.models_.append(round_1)
         self.hist_.append(round_hist)
-        del X_
         return self
     
     def transform(self, X, n_iter = None):
         if n_iter is None:
             n_iter = len(self.models_)
         X_ = X.copy()
+        if len(self.X_cat) > 0:
+            self.initial_cat_values_ = X_[self.X_cat].apply(lambda x: x.mode().iloc[0])
+            X_ = dproc.join_and_assign(
+                X_, X_[self.X_cat].fillna(self.initial_cat_values_)
+            )
         for i, round_1 in enumerate(self.models_):
             if i >= n_iter:
                 break
             for target, m in zip(self.targets, round_1):
                 na_value = self.na_value_dic.get(target, self.na_value)
-                val = [i for i in X.columns if i != target]
-                X_.loc[X[target] == na_value, target] = m.predict(X_.loc[X[target] ==  na_value, val])
+                s_tgt_na = X[target].isna() if na_value is None else X[target] == na_value
+                na_value = self.na_value_dic.get(target, self.na_value)
+                val = [i for i in self.X_num + self.X_cat if i != target]
+                X_.loc[s_tgt_na, target] = X_.loc[s_tgt_na, val].pipe(lambda x: pd.Series(m.predict(x), index = x.index, dtype = X[target].dtype))
         return X_[self.targets]
 
     def get_params(self, deep=True):
@@ -606,7 +624,7 @@ class TypeCaster(TransformerMixin):
         return self
 
     def transform(self, X):
-        return X.astype(self. dtype)
+        return X.astype(self.dtype)
 
     def get_params(self, deep=True):
         return {
