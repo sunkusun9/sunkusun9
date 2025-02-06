@@ -135,6 +135,58 @@ class CatArrangerFreq(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return list(self.c_types_)
 
+class CatArrangerFreqNear(TransformerMixin):
+    def __init__(self, min_frequency, na_value = None):
+        self.min_frequency = min_frequency
+        self.na_value = na_value
+
+    def fit(self, X, y = None):
+        if self.na_value is not None:
+            c = {
+                i: [self.na_value]
+                for i in X.columns
+            }
+        else:
+            c = {i: [] for i in X.columns}
+
+        if self.min_frequency > 0:
+            c = {
+                i: c[i] + X[i].value_counts().pipe(lambda x: x.loc[(x >= self.min_frequency) & ~x.index.isin(c[i])]).index.tolist()
+                for i in X.columns
+            }
+        else:
+            c = {
+                i: c[i] + X[i].loc[~X[i].isin(c[i])].unique().tolist() for i in X.columns
+            }
+        self.c_types_ = {
+            i: pd.CategoricalDtype(c[i]) for i in X.columns
+        }
+        return self
+        
+    def transform(self, X):
+        if self.na_value is not None:
+            ret = pd.concat([
+                dproc.rearrange_cat(X[k], v, lambda d, c: np.argmin(d - c) if c not in d else c, use_set = False).rename(k)
+                for k, v in self.c_types_.items()
+            ], axis = 1)
+            if self.na_value is not None:
+                return ret.fillna(self.na_value)
+            return ret
+        return X
+
+    def get_params(self, deep=True):
+        return {
+            "min_frequency": self.min_frequency, 
+            "unknown_value": self.unknown_value,
+            "na_value": self.na_value
+        }
+
+    def set_output(self, transform='pandas'):
+        pass
+
+    def get_feature_names_out(self, X = None):
+        return list(self.c_types_)
+
 class FrequencyEncoder(TransformerMixin):
     def __init__(self, na_frequency = 0, dtype = 'int'):
         self.na_frequency = 0
