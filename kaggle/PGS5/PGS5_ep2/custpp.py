@@ -9,7 +9,8 @@ class WeightCapacityProcessor(TransformerMixin):
         return self
     def transform(self, X):
         return X.assign(
-            wc_i = lambda x: x['Weight Capacity (kg)'].fillna(self.median_).round().astype('int').astype('category')
+            wc_i = lambda x: x['Weight Capacity (kg)'].fillna(self.median_).round().astype('int').astype('category'),
+            wc_i2 = lambda x: x['Weight Capacity (kg)'].fillna(self.median_).astype('category')
         )
     def get_params(self, deep=True):
         return {
@@ -19,4 +20,4 @@ class WeightCapacityProcessor(TransformerMixin):
         pass
 
     def get_feature_names_out(self, X = None):
-        return self.vars_ + ['wc_i']
+        return self.vars_ + ['wc_i', 'wc_i2']

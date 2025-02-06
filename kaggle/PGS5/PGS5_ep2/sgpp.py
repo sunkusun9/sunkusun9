@@ -135,7 +135,7 @@ class CatArrangerFreq(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return list(self.c_types_)
 
-class CatArrangerFreqNear(TransformerMixin):
+class CatArrangerFreqNearest(TransformerMixin):
     def __init__(self, min_frequency, na_value = None):
         self.min_frequency = min_frequency
         self.na_value = na_value
