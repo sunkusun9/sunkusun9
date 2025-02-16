@@ -187,6 +187,29 @@ class CatArrangerFreqNearest(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return list(self.c_types_)
 
+class CatOOVFilter(TransformerMixin):
+    def __init__(self):
+        pass
+    def fit(self, X, y = None):
+        self.s_dtype_ = {i: X[i].dtype for i in X.columns}
+        self.s_mode_ = X.apply(lambda x: x.mode()[0])
+        return self
+    
+    def transform(self, X):
+        return pd.concat([
+            dproc.rearrange_cat(X[k], v, lambda d, c: 0 if c not in d else c, use_set = True).rename(k)
+            for k, v in self.s_dtype_.items()
+        ], axis=1)
+    def get_params(self, deep=True):
+        return {
+        }
+
+    def set_output(self, transform='pandas'):
+        pass
+
+    def get_feature_names_out(self, X = None):
+        return list(self.s_dtype_.keys())
+    
 class FrequencyEncoder(TransformerMixin):
     def __init__(self, na_frequency = 0, dtype = 'int'):
         self.na_frequency = 0

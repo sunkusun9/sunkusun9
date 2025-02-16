@@ -1,6 +1,12 @@
 from sklearn.base import clone
 from sklearn.compose import ColumnTransformer
-from sklearn.preprocessing import TargetEncoder, OrdinalEncoder, MinMaxScaler, StandardScaler, OneHotEncoder
+from sklearn.preprocessing import OrdinalEncoder, MinMaxScaler, StandardScaler, OneHotEncoder
+
+try:
+    from sklearn.preprocessing import TargetEncoder
+except:
+    from category_encoders import TargetEncoder
+
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.decomposition import PCA, TruncatedSVD
 from sklearn.pipeline import make_pipeline

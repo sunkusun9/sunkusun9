@@ -324,9 +324,20 @@ def replace_cat(s, rule):
         else:
             d[c] = len(code_replace)
             code_replace[new_cat] = len(code_replace)
-    return pd.Series(pd.Categorical.from_codes(
-            s.cat.codes.map(d), list(code_replace.keys()), ordered=s.cat.ordered
-        ), index=s.index)
+    if s.isna().sum() > 0:
+        return pd.Series(s.loc[s.notna()].pipe(
+                lambda x: pd.Series(
+                    pd.Categorical.from_codes(
+                        x.cat.codes.map(d), list(code_replace.keys()), ordered=x.cat.ordered
+                    ), index = x.index
+                )
+            ), index=s.index)
+    else:
+        return pd.Series(
+            pd.Categorical.from_codes(
+                s.cat.codes.map(d), list(code_replace.keys()), ordered=s.cat.ordered
+            ), index=s.index
+        )
 
 def rearrange_cat(s_cat, cat_type, repl_rule, use_set=False):
     """
