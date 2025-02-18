@@ -146,7 +146,7 @@ def get_cat_transformers_ohe(hparams):
     X, _, transformers = get_transformers(hparams)
     X_cat = hparams.get('X_cat', [])
     if len(X_cat) > 0:
-        transformers = [('cat', OneHotEncoder(**hparams.get('ohe', {})), X_cat)] + transformers
+        transformers = [('cat', OneHotEncoder(**hparams.get('cat', {})), X_cat)] + transformers
     return get_X_from_transformer(transformers, hparams.get('X_pre_out', None)), [], transformers
 
 def is_empty_transformer(transformers):
@@ -916,6 +916,7 @@ class CVModel:
         self.train_ = obj['train_']
         return self
 
+
     def load_if_exists(self):
         if os.path.exists(os.path.join(self.path,  self.name + '.cv')):
             self.load()
@@ -927,3 +928,14 @@ class CVModel:
             'cv_best_': self.cv_best_,
             'train_': self.train_
         }, os.path.join(self.path,  self.name + '.cv'))
+        
+def make_predictor(path, name, adapter, predict_func):
+    obj = joblib.load(os.path.join(path,  name + '.cv'))
+    X = obj['train_']['X']
+    preprocessor_, model_ = CVModel.load_predictor(path, name, adapter)
+
+    if preprocessor_ is None:
+        model = model_
+    else:
+        model = make_pipeline(preprocessor_, model_)
+    return lambda x: predict_func(model, x, X)

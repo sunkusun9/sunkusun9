@@ -34,7 +34,8 @@ class CIBMTTransformer(TransformerMixin):
         return {
             'X_2': self.X_2,
             'X_4': self.X_4,
-            'X_na': self.X_na
+            'X_na': self.X_na,
+            'X_nom': self.X_nom
         }
 
     def set_output(self, transform='pandas'):
