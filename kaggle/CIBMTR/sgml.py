@@ -655,15 +655,15 @@ def train(df, hparam, config, adapter, **argv):
     train_params = hparam_.pop('train_params') if 'train_params' in hparam_ else {}
     return train_model(df_train=df, **hparam_, **config, **train_params), hparam_['X']
 
-def stack_cv(cv_list, y):
+def stack_cv(cv_list, y = None):
     if type(cv_list[0].cv_best_['prd']) == pd.Series:
         return pd.concat([
             i.cv_best_['prd'].rename(i.name) for i in cv_list
-        ] + [y], axis=1, join='inner')
+        ] + ([y] if y is not None else []), axis=1, join='inner')
     else:
         return pd.concat([
             i.cv_best_['prd'].rename(columns=lambda x: '{}_{}'.format(i.name, x)) for i in cv_list
-        ] + [y], axis = 1, join = 'inner')
+        ] + ([y] if y is not None else []), axis = 1, join = 'inner')
 
 def stack_prd(cv_list, df, config, df_merge = None):
     if df_merge is None:
