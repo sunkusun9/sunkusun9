@@ -259,7 +259,7 @@ def lr_learning_result(train_result):
     }
 
 class LGBMFitProgressbar:
-    def __init__(self, precision = 5, start_position=0, metric=None, greater_is_better = True, update_cycle = 10):
+    def __init__(self, precision = 5, start_position=0, metric=None, greater_is_better = True, update_cycle = 30):
         self.start_position = start_position
         self.fmt = '{:.' + str(precision) + 'f}'
         self.metric = metric
@@ -280,6 +280,10 @@ class LGBMFitProgressbar:
             self._init(env)
         self.prog += 1
         if (self.prog % self.update_cycle) != 0:
+            if self.total_iteration - 1 == env.iteration - env.begin_iteration:
+                self.progress_bar.close()
+                del self.progress_bar
+                self.progress_bar = None
             return
         self.progress_bar.update(self.update_cycle)
         if env.evaluation_result_list is not None:
@@ -310,7 +314,7 @@ class LGBMFitProgressbar:
 try:
     import xgboost as xgb
     class XGBFitProgressbar(xgb.callback.TrainingCallback):
-        def __init__(self, n_estimators, precision=5, start_position=0, metric=None, greater_is_better=True, update_cycle=10):
+        def __init__(self, n_estimators, precision=5, start_position=0, metric=None, greater_is_better=True, update_cycle=30):
             self.start_position = start_position
             self.n_estimators = n_estimators
             self.fmt = '{:.' + str(precision) + 'f}'
@@ -360,6 +364,7 @@ try:
     
         def after_training(self, model):
             # 학습이 종료되면 진행바를 닫음
+            self.progress_bar.update(self.n_estimators)
             self.progress_bar.close()
             del self.progress_bar
             self.progress_bar = None
