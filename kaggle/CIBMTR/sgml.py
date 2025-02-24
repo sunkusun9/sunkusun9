@@ -11,6 +11,7 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.decomposition import PCA, TruncatedSVD
 from sklearn.pipeline import make_pipeline
 from sklearn.model_selection import train_test_split
+from functools import partial
 
 import joblib
 import numpy as np
@@ -281,6 +282,7 @@ class LGBMFitProgressbar:
         self.prog += 1
         if (self.prog % self.update_cycle) != 0:
             if self.total_iteration - 1 == env.iteration - env.begin_iteration:
+                self.progress_bar.update(self.prog % self.update_cycle)
                 self.progress_bar.close()
                 del self.progress_bar
                 self.progress_bar = None
@@ -651,6 +653,10 @@ def cv_model(sp, model, model_params, df, X, y, predict_func, score_func, return
 def cv(df, sp, hparams, config, adapter, **argv):
     if 'validation_splitter' in config:
         argv['validation_splitter'] = config.pop('validation_splitter')
+    if 'train_data_proc' in config and 'train_data_proc_param' in hparams:
+        config = config.copy()
+        config['train_data_proc'] = partial(config['train_data_proc'], **hparams['train_data_proc_param'])
+        
     return cv_model(
         sp=sp, df=df, **config, **adapter.adapt(hparams, is_train=False, **argv)
     )
@@ -823,7 +829,7 @@ class CBAdapter(BaseAdapter):
                 'valid_config_proc': valid_config if validation_fraction > 0 or argv.get('validate_train', False) else None,
                 'fit_params':  fit_params
             },
-            'result_proc': argv.get('result_proc', cb_learning_result)
+            'result_proc': argv.get('result_proc', cb_learning_result),
         }
 
     def save_model(self, filename, model):

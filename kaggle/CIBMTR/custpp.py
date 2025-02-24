@@ -43,3 +43,7 @@ class CIBMTTransformer(TransformerMixin):
 
     def get_feature_names_out(self, X = None):
         return self.vars_
+
+
+def filter_censor_data(x, t):
+    return x.loc[((x['efs_time'] < t) & (x['efs'] == 1)) | (x['efs_time'] >= t)]
