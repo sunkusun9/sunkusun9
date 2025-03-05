@@ -63,7 +63,7 @@ def get_lda_transformer(hparams):
     if len(lda_transformers) > 0:
         return (
             'lda', make_pipeline(
-                ColumnTransformer(lda_transformers) if len(lda_transformers) > 1 else lda_transformers[1], 
+                ColumnTransformer(lda_transformers) if len(lda_transformers) > 1 else lda_transformers[0][1], 
                 LinearDiscriminantAnalysis(**lda.get('hparams', {}))
             ), X_lda
         )
