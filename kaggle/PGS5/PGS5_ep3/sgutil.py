@@ -2,6 +2,7 @@ from IPython.display import Image
 import os
 import matplotlib.pyplot as plt
 import joblib
+import pandas as pd
 
 class SGCache:
     def __init__(self, img_path, result_path):
@@ -50,7 +51,12 @@ class SGCache:
             plt.show()
         else:
             display(Image(filename=img_file_name))
-    
+
+    def read_result(self, result_name):
+        return joblib.load(
+            os.path.join(self.result_path, result_name + '.joblib')
+        )
+        
     def cache_result(self, result_name, result_func, rerun=False):
         """
         기존에 차트를 출력했던 결과가 있으면 기존 결과를 반환하고,
@@ -79,3 +85,25 @@ class SGCache:
         else:
             result = joblib.load(result_file_name)
         return result
+        
+    def cv_result(self, cv_name, hparams, adapter, prd):
+        joblib.dump({
+            'hparams': hparams,
+            'adapter': adapter,
+        }, os.path.join(self.result_path, cv_name + '.cv'))
+        joblib.dump(prd.values, os.path.join(self.result_path, cv_name + '.prd'))
+
+    def read_cv(self, cv_name):
+        return joblib.load(os.path.join(self.result_path, cv_name + '.cv'))
+
+    def read_prd(self, cv_name, index = None):
+        prd = joblib.load(os.path.join(self.result_path, cv_name + '.prd'))
+        return pd.Series(
+            prd, index = index, name = cv_name
+        ) if index is not None else prd
+
+    def get_cv_list(self):
+        d = os.listdir(self.result_path)
+        l = list({i.split('.')[0] for i in d if i.endswith('.cv')} & {i.split('.')[0] for i in d if i.endswith('.prd')})
+        l.sort()
+        return l

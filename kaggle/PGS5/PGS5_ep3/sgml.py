@@ -643,48 +643,53 @@ def cv_model(sp, model, model_params, df, X, y, predict_func, score_func, return
         del df_cv_train, df_valid, m
         result = None
         gc.collect()
-    s_prd = pd.concat(valid_prds, axis=0)
+    s_prd = pd.concat(valid_prds, axis=0).sort_index()
     progress_callback.end()
     ret = {'valid_scores': valid_scores, 'valid_prd': s_prd, 'model_result': model_result}
     if return_train_scores:
         ret['train_scores'] = train_scores
     return ret
 
-def cv(df, sp, hparams, config, adapter, **argv):
+def cv(df, sp, hparams, config, adapter, use_gpu = False, **argv):
     if 'validation_splitter' in config:
         argv['validation_splitter'] = config.pop('validation_splitter')
+
     if 'train_data_proc' in config and 'train_data_proc_param' in hparams:
         config = config.copy()
         config['train_data_proc'] = partial(config['train_data_proc'], **hparams['train_data_proc_param'])
         
-    return cv_model(
-        sp=sp, df=df, **config, **adapter.adapt(hparams, is_train=False, **argv)
+    ret = cv_model(
+        sp=sp, df=df, **config, **adapter.adapt(hparams, is_train=False, use_gpu = use_gpu, **argv)
     )
+    ret['hparams'] = hparams
+    return ret
 
-def train(df, hparam, config, adapter, **argv):
-    hparam_ = adapter.adapt(hparam, is_train=True, **argv)
+def train(df, hparams, config, adapter, use_gpu = False, **argv):
+    hparam_ = adapter.adapt(hparams, is_train=True, use_gpu = use_gpu, **argv)
     train_params = hparam_.pop('train_params') if 'train_params' in hparam_ else {}
-    return train_model(df_train=df, **hparam_, **config, **train_params), hparam_['X']
-
-def stack_cv(cv_list, y = None):
-    if type(cv_list[0].cv_best_['prd']) == pd.Series:
-        return pd.concat([
-            i.cv_best_['prd'].rename(i.name) for i in cv_list
-        ] + ([y] if y is not None else []), axis=1, join='inner')
+    if 'train_data_proc' in config:
+        data_proc = partial(config['train_data_proc'], **hparams.get('train_data_proc_param', {}))
     else:
-        return pd.concat([
-            i.cv_best_['prd'].rename(columns=lambda x: '{}_{}'.format(i.name, x)) for i in cv_list
-        ] + ([y] if y is not None else []), axis = 1, join = 'inner')
-
-def stack_prd(cv_list, df, config, df_merge = None):
-    if df_merge is None:
-        return pd.concat([
-            i.get_predictor()(df).rename(i.name) for i in cv_list
-        ], axis=1)
-    return pd.concat(
-        [df_merge] + [
-            i.get_predictor()(df).rename(i.name) for i in cv_list if i not in df_merge.columns
-        ], axis=1)
+        data_proc = lambda x: x
+    return train_model(df_train=data_proc(df), **hparam_, **config, **train_params), hparam_['X']
+                 
+def save_predictor(path, model_name, adapter, objs):
+    model_filename = os.path.join(path, model_name + '.model')
+    adapter.save_model(model_filename, objs['model'])
+    
+def load_predictor(path, model_name, adapter):
+    model_filename = os.path.join(path, model_name + '.model')
+    if os.path.exists(model_filename):
+        spec = joblib.load(os.path.join(path, model_name + '.spec'))
+        model = adapter.load_model(model_filename)
+        pre_filename = os.path.exists(path, model_name + '.pre')
+        if os.path.exists(pre_filename):
+            return make_pipeline(
+                joblib.load(pre_filename), model
+            ), spec
+        return model, spec
+    else:
+        return None
 
 class BaseAdapter():
     def save_model(self, filename, model):
@@ -697,7 +702,7 @@ class SklearnAdapter(BaseAdapter):
     def __init__(self, model):
         self.model = model
 
-    def adapt(self, hparams, is_train=False, **argv):
+    def adapt(self, hparams, is_train=False, use_gpu = False, **argv):
         X, _, transformers = get_transformers(hparams)
         preprocessor = hparams.get('preprocessor', None)
         if preprocessor is None:
@@ -714,10 +719,13 @@ class SklearnAdapter(BaseAdapter):
         }
 
 class LGBMAdapter(BaseAdapter):
-    def __init__(self, model):
+    def __init__(self, model, progress = 0):
         self.model = model
+        self.callbacks = list()
+        if progress > 0:
+            self.callbacks.append(LGBMFitProgressbar(update_cycle = progress))
 
-    def adapt(self, hparams, is_train=False, **argv):
+    def adapt(self, hparams, is_train=False, use_gpu = False, **argv):
         X, X_cat_feature, transformers = get_cat_transformers_ord(hparams)
         validation_fraction = hparams.get('validation_fraction', 0)
         if validation_fraction > 0:
@@ -741,7 +749,7 @@ class LGBMAdapter(BaseAdapter):
             'train_params': {
                 'fit_params': {
                     'categorical_feature': X_cat_feature,
-                    'callbacks': [LGBMFitProgressbar()]
+                    'callbacks': self.callbacks
                 },
                 'valid_splitter': validation_splitter,
                 'valid_config_proc': gb_valid_config if validation_fraction > 0 or argv.get('validate_train', False) else None,
@@ -750,10 +758,12 @@ class LGBMAdapter(BaseAdapter):
         }
 
 class XGBAdapter(BaseAdapter):
-    def __init__(self, model):
+    def __init__(self, model, gpu = 'cuda', progress = 0):
         self.model = model
+        self.gpu = 'cuda'
+        self.progress = progress
 
-    def adapt(self, hparams, is_train=False, **argv):
+    def adapt(self, hparams, is_train=False, use_gpu = False, **argv):
         X, _, transformers = get_cat_transformers_ohe(hparams)
         validation_fraction = hparams.get('validation_fraction', 0)
         if validation_fraction > 0:
@@ -769,12 +779,17 @@ class XGBAdapter(BaseAdapter):
         else:
             X = X + hparams.get('X_pre', [])
             preprocessor = make_pipeline(preprocessor, ColumnTransformer(transformers)) if not is_empty_transformer(transformers) else preprocessor
+        callbacks = list()
+        if self.progress > 0:
+            callbacks.append(
+                XGBFitProgressbar(n_estimators=hparams['model_params'].get('n_estimators', 100), update_cycle = self.progress)
+            )
         return {
             'model': self.model, 
             'model_params': {
                 **hparams['model_params'], 
-                'callbacks': [XGBFitProgressbar(n_estimators=hparams['model_params'].get('n_estimators', 100))],
-                'device': argv.get('device', 'cpu')
+                'callbacks': callbacks,
+                'device': self.gpu if use_gpu else 'cpu'
             },
             'X': X,
             'preprocessor': preprocessor,
@@ -787,10 +802,12 @@ class XGBAdapter(BaseAdapter):
         }
 
 class CBAdapter(BaseAdapter):
-    def __init__(self, model):
+    def __init__(self, model, gpu = 'GPU', progress = 0):
         self.model = model
+        self.gpu = gpu
+        self.progress = 0
 
-    def adapt(self, hparams, is_train=False, **argv):
+    def adapt(self, hparams, is_train=False, use_gpu = False, **argv):
         X, X_cat_feature, transformers = get_cat_transformers_pt(hparams)
         validation_fraction = hparams.get('validation_fraction', 0)
         if validation_fraction > 0:
@@ -807,9 +824,8 @@ class CBAdapter(BaseAdapter):
         else:
             X = X + hparams.get('X_pre', [])
             preprocessor = make_pipeline(preprocessor, ColumnTransformer(transformers).set_output(transform='pandas')) if not is_empty_transformer(transformers) else preprocessor
-        task_type = argv.get('task_type', None)
-        if task_type != 'GPU':
-            fit_params = {'callbacks': [CatBoostFitProgressbar(n_estimators=hparams['model_params'].get('n_estimators', 100))]}
+        if (not use_gpu) and self.progress > 0:
+            fit_params = {'callbacks': [CatBoostFitProgressbar(n_estimators=hparams['model_params'].get('n_estimators', 100), update_cycle = self.progress)]}
             valid_config = gb_valid_config
         else:
             fit_params = {}
@@ -819,8 +835,7 @@ class CBAdapter(BaseAdapter):
             'model_params': {
                 **hparams['model_params'], 
                 'cat_features': X_cat_feature, 'verbose': False,
-                'task_type': task_type,
-                'devices': argv.get('devices', None)
+                'task_type': self.gpu if use_gpu else None
             },
             'X': X,
             'preprocessor': preprocessor,
@@ -838,115 +853,3 @@ class CBAdapter(BaseAdapter):
     def load_model(self, filename):
         model = self.model()
         return model.load_model(filename)
-
-class CVModel:
-    def __init__(self, path, name, sp, config, adapter):
-        self.path = path
-        self.name = name
-        self.sp = sp
-        self.config = config
-        self.adapter = adapter
-        self.cv_results_ = dict()
-        self.cv_best_= {
-            'score': -np.inf, 'hparams': {}, 'prd': None, 'k': ''
-        }
-        self.train_ = {
-            'hparams': {}, 'k': '', 'result': {}, 'X': ''
-        }
-        self.preprocessor_ = None
-        self.model_ = None
-
-    def adhoc(self, df, sp, hparam, **argv):
-        return cv(df, sp, hparam, self.config, self.adapter, **argv)
-
-    def cv(self, df, hparams, rerun=False, **argv):
-        k = str(hparams)
-        if k in self.cv_results_ and not rerun:
-            return self.cv_results_[k]
-        result = cv(df, self.sp, hparams, self.config, self.adapter, **argv)
-        score =  np.mean(result['valid_scores'])
-        prd = result.pop('valid_prd')
-        self.cv_results_[k] = result
-        if score > self.cv_best_['score']:
-            self.cv_best_['score'] = score
-            self.cv_best_['hparams'] = hparams.copy()
-            self.cv_best_['prd'] = prd
-            self.cv_best_['k'] = k
-        self.save()
-        return result
-
-    def get_best_result(self):
-        return self.cv_results_[
-            self.cv_best_['k']
-        ]
-    
-    def train(self, df, rerun=False, **argv):
-        if self.train_['k'] == self.cv_best_['k'] and not rerun:
-            return self.train_['result']
-        result, X = train(df, self.cv_best_['hparams'], self.config, self.adapter, **argv)
-        if 'preprocessor' in result:
-            self.preprocessor_ = result.pop('preprocessor')
-            joblib.dump(self.preprocessor_, os.path.join(self.path, self.name + '.pre'))
-        else:
-            self.preprocessor_ = None
-        self.model_ = result.pop('model')
-        self.adapter.save_model(os.path.join(self.path, self.name + '.model'), self.model_)
-        self.train_['hparams'] = self.cv_best_['hparams']
-        self.train_['k'] = self.cv_best_['k']
-        self.train_['result'] = result
-        self.train_['X'] = X
-        self.save()
-        return result
-
-    def get_predictor(self):
-        if self.train_['k'] == '' or self.train_['k'] != self.cv_best_['k']:
-            return None
-
-        if self.model_ == None:
-            self.preprocessor_, self.model_ = CVModel.load_predictor(self.path, self.name, self.adapter)
-            
-        if self.preprocessor_ is None:
-            model = self.model_
-        else:
-            model = make_pipeline(self.preprocessor_, self.model_)
-
-        return lambda x: self.config['predict_func'](model, x, self.train_['X'])
-
-    def load_predictor(path, name, adapter):
-        if os.path.exists(os.path.join(path,  name + '.pre')):
-            preprocessor_ = joblib.load(os.path.join(path,  name + '.pre'))
-        else:
-            preprocessor_ = None
-        model_ = adapter.load_model(os.path.join(path,  name + '.model'))
-        return preprocessor_, model_
-    
-    def load(self):
-        obj = joblib.load(os.path.join(self.path,  self.name + '.cv'))
-        self.cv_results_ = obj['cv_results_']
-        self.cv_best_ = obj['cv_best_']
-        self.train_ = obj['train_']
-        return self
-
-
-    def load_if_exists(self):
-        if os.path.exists(os.path.join(self.path,  self.name + '.cv')):
-            self.load()
-        return self
-                       
-    def save(self):
-        joblib.dump({
-            'cv_results_': self.cv_results_,
-            'cv_best_': self.cv_best_,
-            'train_': self.train_
-        }, os.path.join(self.path,  self.name + '.cv'))
-        
-def make_predictor(path, name, adapter, predict_func):
-    obj = joblib.load(os.path.join(path,  name + '.cv'))
-    X = obj['train_']['X']
-    preprocessor_, model_ = CVModel.load_predictor(path, name, adapter)
-
-    if preprocessor_ is None:
-        model = model_
-    else:
-        model = make_pipeline(preprocessor_, model_)
-    return lambda x: predict_func(model, x, X)
