@@ -3,6 +3,7 @@ import os
 import matplotlib.pyplot as plt
 import joblib
 import pandas as pd
+import numpy as np
 
 class SGCache:
     def __init__(self, img_path, result_path):
@@ -102,6 +103,14 @@ class SGCache:
             prd, index = index, name = cv_name
         ) if index is not None else prd
 
+    def read_prds(self, cv_names, index = None):
+        prds = np.stack([
+            joblib.load(os.path.join(self.result_path, cv_name + '.prd')) for cv_name in cv_names
+        ], axis=1)
+        return pd.DataFrame(
+            prds, index = index, columns = cv_names
+        ) if index is not None else prds
+        
     def get_cv_list(self):
         d = os.listdir(self.result_path)
         l = list({i.split('.')[0] for i in d if i.endswith('.cv')} & {i.split('.')[0] for i in d if i.endswith('.prd')})
