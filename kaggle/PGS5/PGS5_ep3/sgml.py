@@ -673,24 +673,31 @@ def train(df, hparams, config, adapter, use_gpu = False, **argv):
         data_proc = lambda x: x
     return train_model(df_train=data_proc(df), **hparam_, **config, **train_params), hparam_['X']
                  
-def save_predictor(path, model_name, adapter, objs):
+def save_predictor(path, model_name, adapter, objs, spec):
     model_filename = os.path.join(path, model_name + '.model')
     adapter.save_model(model_filename, objs['model'])
+    if 'preprocessor' in objs:
+        pre_filename = os.path.exists(path, model_name + '.pre')
+        joblib.dump(objs['preprocessor'], pre_filename)
+    joblib.dump(spec, os.path.join(path, model_name + '.spec'))
     
 def load_predictor(path, model_name, adapter):
     model_filename = os.path.join(path, model_name + '.model')
     if os.path.exists(model_filename):
         spec = joblib.load(os.path.join(path, model_name + '.spec'))
         model = adapter.load_model(model_filename)
-        pre_filename = os.path.exists(path, model_name + '.pre')
+        pre_filename = os.path.join(path, model_name + '.pre')
         if os.path.exists(pre_filename):
-            return make_pipeline(
-                joblib.load(pre_filename), model
-            ), spec
-        return model, spec
+            return model, joblib.load(pre_filename), spec
+        return model, None, spec
     else:
         return None
 
+def assemble_predictor(model, preprocessor, spec, config):
+    if preprocessor is not None:
+        return lambda x: config['predict_func'](make_pipeline(preprocessor, model), x, spec)
+    return lambda x: config['predict_func'](model, x, spec)
+        
 class BaseAdapter():
     def save_model(self, filename, model):
         joblib.dump(model, filename)

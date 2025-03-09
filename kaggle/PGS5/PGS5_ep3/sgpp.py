@@ -831,3 +831,24 @@ class JoinEncoder(TransformerMixin):
 
     def get_feature_names_out(self, X = None):
         return self.features
+
+class ColumnNameCleaner(TransformerMixin):
+    def __init__(self):
+        pass
+    
+    def fit(self, X, y = None):
+        self.columns_ = [i.strip().replace(' ', '_').replace('\t', '_') for i in X.columns]
+        return self
+
+    def transform(self, X):
+        if type(X)  == pd.DataFrame:
+            return X.rename(columns = lambda x: x.strip().replace(' ', '_').replace('\t', '_'))
+        else:
+            return X.rename(lambda x: x.strip().replace(' ', '_').replace('\t', '_'))
+    def get_params(self, deep = True):
+        return {}
+    def set_output(self, transdorm = 'pandas'):
+        pass
+    def get_feature_names_out(self, X = None):
+        return self.columns_
+                            

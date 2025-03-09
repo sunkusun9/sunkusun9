@@ -4,9 +4,10 @@ import matplotlib.pyplot as plt
 import joblib
 import pandas as pd
 import numpy as np
+import sgml
 
 class SGCache:
-    def __init__(self, img_path, result_path):
+    def __init__(self, img_path, result_path, model_path):
         """
         Parameters:
             img_path: str
@@ -16,6 +17,7 @@ class SGCache:
         """
         self.img_path = img_path
         self.result_path = result_path
+        self.model_path = model_path
         
     def cache_fig(self, img_name, img_func, nrow=1, ncol=1, figsize=(8, 3), redraw=False):
         """
@@ -87,12 +89,15 @@ class SGCache:
             result = joblib.load(result_file_name)
         return result
         
-    def cv_result(self, cv_name, hparams, adapter, prd):
+    def cv_result(self, cv_name, hparams, adapter, prd, overwrite = False):
+        filename = os.path.join(self.result_path, cv_name + '.prd')
+        if not overwrite and os.path.exists(filename):
+            raise Exception("Exists")
         joblib.dump({
             'hparams': hparams,
             'adapter': adapter,
         }, os.path.join(self.result_path, cv_name + '.cv'))
-        joblib.dump(prd.values, os.path.join(self.result_path, cv_name + '.prd'))
+        joblib.dump(prd.values, filename)
 
     def read_cv(self, cv_name):
         return joblib.load(os.path.join(self.result_path, cv_name + '.cv'))
@@ -110,9 +115,27 @@ class SGCache:
         return pd.DataFrame(
             prds, index = index, columns = cv_names
         ) if index is not None else prds
-        
+
+    def read_cvs(self, cv_names):
+        return {
+            cv_name: joblib.load(os.path.join(self.result_path, cv_name + '.cv')) for cv_name in cv_names
+        }
+    
     def get_cv_list(self):
         d = os.listdir(self.result_path)
         l = list({i.split('.')[0] for i in d if i.endswith('.cv')} & {i.split('.')[0] for i in d if i.endswith('.prd')})
         l.sort()
         return l
+
+    def train_cv(self, cv_name, df, config, use_gpu = False, retrain =False):
+        cv_obj = self.read_cv(cv_name)
+        if os.path.exists(os.path.join(self.model_path, cv_name + '.model')) and not retrain:
+            return sgml.load_predictor(self.model_path, cv_name, cv_obj['adapter'])
+        objs, spec = sgml.train(df, **cv_obj, config = config, use_gpu = use_gpu)
+        sgml.save_predictor(self.model_path, cv_name, cv_obj['adapter'], objs, spec)
+        return objs['model'], objs.get('preprocessor', None), spec
+
+    def get_predictor_cv(self, cv_name, config):
+        cv_obj = self.read_cv(cv_name)
+        return sgml.assemble_predictor(*sgml.load_predictor(self.model_path, cv_name, cv_obj['adapter']), config)
+        
