@@ -111,7 +111,7 @@ class SGCache:
             prd, index = index, name = cv_name
         ) if index is not None else prd
 
-    def read_prds(self, cv_names, index = None):
+    def read_prds(self, cv_names, index = None, df_stk):
         prds = np.stack([
             joblib.load(os.path.join(self.result_path, cv_name + '.prd')) for cv_name in cv_names
         ], axis=1)
@@ -130,7 +130,7 @@ class SGCache:
         l.sort()
         return l
 
-    def train_cv(self, cv_name, df, config, use_gpu = False, retrain =False):
+    def train_cv(self, cv_name, df, config, use_gpu = False, retrain = False):
         cv_obj = self.read_cv(cv_name)
         if os.path.exists(os.path.join(self.model_path, cv_name + '.model')) and not retrain:
             return sgml.load_predictor(self.model_path, cv_name, cv_obj['adapter'])
