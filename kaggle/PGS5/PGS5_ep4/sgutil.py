@@ -92,18 +92,20 @@ class SGCache:
     def read_cv(self, cv_name):
         return joblib.load(os.path.join(self.result_path, cv_name + '.cv'))
 
-    def cv_result(self, cv_name, df, sp, hparams, config, adapter, use_gpu = False, rerun = False):
+    def cv_result(self, cv_name, df, sp, hparams, config, adapter, use_gpu = False, rerun = False, result_proc = None):
         filename = os.path.join(self.result_path, cv_name + '.prd')
         if not rerun and os.path.exists(filename):
-            return self.read_cv(cv_name)['valid_scores']
-        result = sgml.cv(df, sp, hparams, config, adapter, use_gpu = use_gpu)
-        joblib.dump({
+            return self.read_cv(cv_name)
+        result = sgml.cv(df, sp, hparams, config, adapter, use_gpu = use_gpu, result_proc = result_proc)
+        cv = {
             'hparams': hparams,
             'adapter': adapter,
             'valid_scores': result['valid_scores'],
-        }, os.path.join(self.result_path, cv_name + '.cv'))
+            'model_result': result.get('model_result', None)
+        }
+        joblib.dump(cv, os.path.join(self.result_path, cv_name + '.cv'))
         joblib.dump(result['valid_prd'].values, filename)
-        return result['valid_scores']
+        return cv
 
     def read_prd(self, cv_name, index = None):
         prd = joblib.load(os.path.join(self.result_path, cv_name + '.prd'))

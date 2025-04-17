@@ -257,6 +257,9 @@ def lr_learning_result(train_result):
     return {
         'coef': pd.Series(train_result['model'].coef_, index=train_result['variables']) if len(train_result['model'].coef_.shape) == 1 else \
             pd.DataFrame(train_result['model'].coef_.T, index=train_result['variables'])
+    } if type(train_result['model'].coef_) == np.ndarray else {
+        'coef': pd.Series(train_result['model'].coef_.values, index=train_result['variables']) if len(train_result['model'].coef_.shape) == 1 else \
+            pd.DataFrame(train_result['model'].coef_.T.values, index=train_result['variables'])
     }
 
 class LGBMFitProgressbar:
@@ -724,6 +727,8 @@ class SklearnAdapter(BaseAdapter):
             'preprocessor': preprocessor,
             'result_proc': argv.get('result_proc', None)
         }
+    def __str__(self):
+        return str(self.model.__name__)
 
 class LGBMAdapter(BaseAdapter):
     def __init__(self, model, progress = 0):
