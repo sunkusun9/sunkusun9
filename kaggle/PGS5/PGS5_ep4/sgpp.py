@@ -269,6 +269,34 @@ class CatCombiner(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return [i for _, i in self.combine_features]
 
+class CatCombiner2(TransformerMixin):
+    def __init__(self, combine_features):
+        self.combine_features = combine_features
+
+    def fit(self, X, y = None):
+        self.columns_ = [
+            ','.join(i)
+            for i in self.combine_features
+        ]
+        return self
+        
+    def transform(self, X):
+        return pd.concat([
+            (X[i].astype('str') + ',').sum(axis=1).astype('category').rename(j)
+            for i, j in zip(self.combine_features, self.columns_)
+        ], axis = 1)
+    
+    def get_params(self, deep=True):
+        return {
+            "combine_features": self.combine_features, 
+        }
+
+    def set_output(self, transform='pandas'):
+        pass
+
+    def get_feature_names_out(self, X = None):
+        return self.columns_
+
 class LGBMImputer(TransformerMixin):
     def __init__(self, lgb_model, hparams, X_num, X_cat, target, na_value = np.nan):
         self.lgb_model = lgb_model

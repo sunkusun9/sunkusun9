@@ -438,7 +438,7 @@ def train_model(model, model_params, df_train, X, y, valid_splitter=None, prepro
     Parameters:
         model: Class
             Model class
-        model_param: dict
+        model_params: dict
             Model hyper parameters
         df_train: pd.DataFrame
             Train data
@@ -477,6 +477,10 @@ def train_model(model, model_params, df_train, X, y, valid_splitter=None, prepro
         if valid_splitter is not None:
             df_train, df_valid = valid_splitter(df_train)
         X_train = preprocessor.fit_transform(df_train[X], df_train[y])
+        n_categ = argv.get('categorical_num', 0)
+        if n_categ > 0:
+            model_params = model_params.copy()
+            model_params['feature_types'] = ["c" if i < n_categ else "q" for i in range(X_train.shape[-1])]
         result['variables'] = preprocessor.get_feature_names_out()
         if valid_splitter is not None:
             X_valid = preprocessor.transform(df_valid[X])
@@ -776,7 +780,11 @@ class XGBAdapter(BaseAdapter):
         self.progress = progress
 
     def adapt(self, hparams, is_train=False, use_gpu = False, **argv):
-        X, _, transformers = get_cat_transformers_ohe(hparams)
+        X_cat_feature = []
+        if hparams.get('model_params', {}).get('enable_categorical', False):
+            X, X_cat_feature, transformers = get_cat_transformers_ord(hparams)
+        else:
+            X, _, transformers = get_cat_transformers_ohe(hparams)
         validation_fraction = hparams.get('validation_fraction', 0)
         if validation_fraction > 0:
             if argv.get('validation_splitter', None) is None:
@@ -799,7 +807,7 @@ class XGBAdapter(BaseAdapter):
         return {
             'model': self.model, 
             'model_params': {
-                **hparams['model_params'], 
+                **hparams.get('model_params', {}), 
                 'callbacks': callbacks,
                 'device': self.gpu if use_gpu else 'cpu'
             },
@@ -808,7 +816,8 @@ class XGBAdapter(BaseAdapter):
             'train_params': {
                 'valid_splitter': validation_splitter,
                 'valid_config_proc': gb_valid_config if validation_fraction > 0 or argv.get('validate_train', False) else None,
-                'fit_params': {'verbose': False}
+                'fit_params': {'verbose': False},
+                'categorical_num': len(X_cat_feature)
             },
             'result_proc': argv.get('result_proc', xgb_learning_result),
         }
