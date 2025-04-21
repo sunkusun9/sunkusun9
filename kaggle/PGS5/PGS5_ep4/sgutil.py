@@ -144,3 +144,4 @@ class SGCache:
         cv_obj = self.read_cv(cv_name)
         return sgml.assemble_predictor(*sgml.load_predictor(self.model_path, cv_name, cv_obj['adapter']), config)
         
+
