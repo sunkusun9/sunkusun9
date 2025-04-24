@@ -700,10 +700,10 @@ def load_predictor(path, model_name, adapter):
     else:
         return None
 
-def assemble_predictor(model, preprocessor, spec, config):
+def assemble_predictor(model, config, preprocessor = None, variables = None, **args):
     if preprocessor is not None:
-        return lambda x: config['predict_func'](make_pipeline(preprocessor, model), x, spec)
-    return lambda x: config['predict_func'](model, x, spec)
+        return lambda x: config['predict_func'](make_pipeline(preprocessor, model), x, variables)
+    return lambda x: config['predict_func'](model, x, variables)
         
 class BaseAdapter():
     def save_model(self, filename, model):
