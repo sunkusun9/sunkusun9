@@ -24,6 +24,13 @@ class ApplyWrapper(TransformerMixin):
     def fit(self, X, y = None):
         self.transformer.fit(X[self.vals], y)
         self.fitted_ = True
+        self.columns_ = X.columns.tolist()
+        if self.suffix is None and self.postfix is None:
+            self.columns_ = self.columns_ + [i for i in self.transformer.get_feature_names_out() if i not in self.columns_]
+        elif self.suffix is not None:
+            self.columns_ = self.columns_ + [self.suffix + i for i in self.transformer.get_feature_names_out()]
+        elif self.postfix is not None:
+            self.columns_ = self.columns_ + [i + self.postfix for i in self.transformer.get_feature_names_out()]
         return self
 
     def transform(self, X, **argv):
@@ -35,7 +42,7 @@ class ApplyWrapper(TransformerMixin):
             return X.join(
                 self.transformer.transform(X[self.vals], **argv).rename(columns = lambda x: self.suffix + x)
             )
-        if self.postfix is not None:
+        elif self.postfix is not None:
             return X.join(
                 self.transformer.transform(X[self.vals], **argv).rename(columns = lambda x: x + self.postfix)
             )
@@ -53,12 +60,7 @@ class ApplyWrapper(TransformerMixin):
         pass
 
     def get_feature_names_out(self, X = None):
-        vals = self.vals.copy()
-        if self.suffix is not None:
-            vals = [self.suffix + i for i in self.vals]
-        if self.postfix is not None:
-            vals = [i + self.postfix for i in self.vals]
-        return vals
+        return self.columns_
         
 class CatArrangerFreq(TransformerMixin):
     def __init__(self, min_frequency, unknown_value = None, na_value = None):
@@ -275,14 +277,14 @@ class CatCombiner2(TransformerMixin):
 
     def fit(self, X, y = None):
         self.columns_ = [
-            ','.join(i)
+            '__'.join(i)
             for i in self.combine_features
         ]
         return self
         
     def transform(self, X):
         return pd.concat([
-            (X[i].astype('str') + ',').sum(axis=1).astype('category').rename(j)
+            (X[i].astype('str') + '__').sum(axis=1).astype('category').rename(j)
             for i, j in zip(self.combine_features, self.columns_)
         ], axis = 1)
     
@@ -648,7 +650,7 @@ class PolarsProcessor(TransformerMixin):
         pass
 
     def get_feature_names_out(self, X = None):
-        return self.pl_type
+        return [i for i in self.pl_type_.keys()]
     
 class ExprProcessor(TransformerMixin):
     def __init__(self, dict_expr, with_columns = True):

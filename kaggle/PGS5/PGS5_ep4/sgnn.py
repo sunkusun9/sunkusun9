@@ -659,10 +659,11 @@ def load_model(filename, m):
     return model
 
 class NNAdapter(sgml.BaseAdapter):
-    def __init__(self, model, to_tf_dataset=None, target_func=None):
+    def __init__(self, model, to_tf_dataset=None, target_func=None, progress=50):
         self.model = model
         self.to_tf_dataset = to_tf_dataset
         self.target_func = target_func
+        self.progress = progress
 
     def adapt(self, hparams, is_train=False, **argv):
         X, _, transformers = sgml.get_cat_transformers_ord(hparams)
@@ -687,7 +688,7 @@ class NNAdapter(sgml.BaseAdapter):
                 'fit_params': {
                     'cb': [FitProgressBar(
                         metric=argv.get('prog_metric', None), greater_is_better=argv.get('prog_greater_is_better', True), 
-                        postfix_step=30, prog_level=1
+                        postfix_step=self.progress, prog_level=1
                     )]
                 }
             },

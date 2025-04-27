@@ -162,11 +162,8 @@ def gb_valid_config2(train_set, valid_set):
 def gb_valid_config_valid_only(train_set, valid_set):
     return {}, {'eval_set': [valid_set]}
 
-def pass_learning_result(m, train_result, preprocessor=None):
-    if preprocessor is None:
-        return m, train_result
-    else:
-        return make_pipeline(preprocessor, m), train_result
+def pass_learning_result(train_result):
+    return train_result
 
 def lgb_learning_result(train_result):
     """
@@ -695,15 +692,15 @@ def load_predictor(path, model_name, adapter):
         model = adapter.load_model(model_filename)
         pre_filename = os.path.join(path, model_name + '.pre')
         if os.path.exists(pre_filename):
-            return model, joblib.load(pre_filename), spec
-        return model, None, spec
+            return {'model': model, 'preprocessor': joblib.load(pre_filename), 'spec': spec}
+        return {'model': model, 'preprocessor': None, 'spec': spec}
     else:
         return None
 
-def assemble_predictor(model, config, preprocessor = None, variables = None, **args):
+def assemble_predictor(model, config, preprocessor = None, spec = None, **args):
     if preprocessor is not None:
-        return lambda x: config['predict_func'](make_pipeline(preprocessor, model), x, variables)
-    return lambda x: config['predict_func'](model, x, variables)
+        return lambda x: config['predict_func'](make_pipeline(preprocessor, model), x, spec)
+    return lambda x: config['predict_func'](model, x, spec)
         
 class BaseAdapter():
     def save_model(self, filename, model):
@@ -826,7 +823,7 @@ class CBAdapter(BaseAdapter):
     def __init__(self, model, gpu = 'GPU', progress = 0):
         self.model = model
         self.gpu = gpu
-        self.progress = 0
+        self.progress = progress
 
     def adapt(self, hparams, is_train=False, use_gpu = False, **argv):
         X, X_cat_feature, transformers = get_cat_transformers_pt(hparams)
