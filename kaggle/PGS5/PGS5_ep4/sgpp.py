@@ -25,12 +25,13 @@ class ApplyWrapper(TransformerMixin):
         self.transformer.fit(X[self.vals], y)
         self.fitted_ = True
         self.columns_ = X.columns.tolist()
+        output_names = self.transformer.get_feature_names_out() if hasattr(self.transformer, 'get_feature_names_out') else self.vals
         if self.suffix is None and self.postfix is None:
-            self.columns_ = self.columns_ + [i for i in self.transformer.get_feature_names_out() if i not in self.columns_]
+            self.columns_ = self.columns_ + [i for i in output_names if i not in self.columns_]
         elif self.suffix is not None:
-            self.columns_ = self.columns_ + [self.suffix + i for i in self.transformer.get_feature_names_out()]
+            self.columns_ = self.columns_ + [self.suffix + i for i in output_names]
         elif self.postfix is not None:
-            self.columns_ = self.columns_ + [i + self.postfix for i in self.transformer.get_feature_names_out()]
+            self.columns_ = self.columns_ + [i + self.postfix for i in output_names]
         return self
 
     def transform(self, X, **argv):

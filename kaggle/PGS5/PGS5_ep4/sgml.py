@@ -631,10 +631,10 @@ def cv_model(sp, model, model_params, df, X, y, predict_func, score_func, return
             m = result['model']
         if target_invfunc is None:
             target_invfunc = lambda x: x
-        valid_prds.append(target_invfunc(predict_func(m, df_valid, X)))
+        valid_prds.append(target_invfunc(df_valid, predict_func(m, df_valid, X)))
         if return_train_scores:
             train_scores.append(
-                score_func(df_cv_train, target_invfunc(predict_func(m, df_cv_train, X)))
+                score_func(df_cv_train, target_invfunc(df_cv_train, predict_func(m, df_cv_train, X)))
             )
         valid_scores.append(score_func(df_valid, valid_prds[-1]))
         if result_proc is not None:
@@ -700,7 +700,10 @@ def load_predictor(path, model_name, adapter):
 def assemble_predictor(model, config, preprocessor = None, spec = None, **args):
     if preprocessor is not None:
         return lambda x: config['predict_func'](make_pipeline(preprocessor, model), x, spec)
-    return lambda x: config['predict_func'](model, x, spec)
+    if config['target_invfunc'] is None:
+        return lambda x: config['predict_func'](model, x, spec)
+    else:
+        return lambda x: config['target_invfunc'](x, config['predict_func'](model, x, spec))
         
 class BaseAdapter():
     def save_model(self, filename, model):
