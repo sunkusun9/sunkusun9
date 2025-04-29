@@ -700,7 +700,7 @@ def load_predictor(path, model_name, adapter):
 def assemble_predictor(model, config, preprocessor = None, spec = None, **args):
     if preprocessor is not None:
         return lambda x: config['predict_func'](make_pipeline(preprocessor, model), x, spec)
-    if config['target_invfunc'] is None:
+    if config.get('target_invfunc', None) is None:
         return lambda x: config['predict_func'](model, x, spec)
     else:
         return lambda x: config['target_invfunc'](x, config['predict_func'](model, x, spec))

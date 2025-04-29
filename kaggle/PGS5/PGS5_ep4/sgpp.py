@@ -8,6 +8,7 @@ import lightgbm as lgb
 
 from sklearn.metrics import accuracy_score, mean_squared_error
 from sklearn.model_selection import train_test_split
+from sklearn.model_selection import KFold
 
 try:
     from tqdm.notebook import tqdm
@@ -761,3 +762,64 @@ class ColumnNameCleaner(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return self.columns_
                             
+class TargetEncoderIntr(TransformerMixin):
+    def __init__(self, vals, cv = KFold(5, shuffle = True, random_state = 123)):
+        self.vals = vals
+        self.cv = cv
+        
+    def estimate_stat(self, X_y):
+        # group statistics
+        stats = X_y.groupby(val, observed = True)['target'].agg(
+            ['sum', 'var', 'count']
+        )
+    
+        # between-group variance (variance of group means)
+        var_between = np.var(stats['sum'] / stats['count'], ddof=1)
+    
+        # within-group variance (assume binomial or sample variance estimate)
+        var_within = stats['var'].mean()
+    
+        # alpha estimation (method-of-moments style)
+        alpha = (var_within - var_between) / var_between
+        alpha = max(alpha, 0.0)
+        return (stats['sum'] + self.alpha * self.global_mean_) / (stats['count'] + self.alpha)
+
+    def fit(self, X, y = None):
+        X_y = X.assign(target = y)
+        self.global_mean_ = y.mean()
+        
+        self.stat_ = [
+            val, self.estimate_stat(X_y) for val in self.vals
+        ]
+        self.fitted_ = True
+        return self
+
+    def transform(self, X, **argv):
+        return pd.concat([
+            (
+                X[val].apply(tuple, axis=1).map(stat).rename('__'.join(val)) 
+                if len(val) > 1 else 
+                X[val[0]].map(stat).rename(val[0])).fillna(self.global_mean_)
+            ) for val, stat in self.stat_
+        ], axis=1)
+        
+    def fit_transform(self, X, y = None):
+        ret = list()
+        for train_idx, valid_idx in self.cv.split(X, y):
+            self.fit(X.iloc[train_idx], y.iloc[train_idx])
+            ret.append(self.transform(X.iloc[valid_idx]))
+            print('.')
+        return pd.concat(ret).loc[X.index]
+            
+    def get_params(self, deep=True):
+        return {
+            "vals": self.vals, 
+            "max_std": self.max_std,
+            "min_count": self.min_count,
+        }
+
+    def set_output(self, transform='pandas'):
+        pass
+
+    def get_feature_names_out(self, X = None):
+        return ['__'.join(val) for val, _ in self.vals]
