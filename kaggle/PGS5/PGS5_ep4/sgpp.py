@@ -761,7 +761,7 @@ class ColumnNameCleaner(TransformerMixin):
         pass
     def get_feature_names_out(self, X = None):
         return self.columns_
-                            
+"""
 class TargetEncoderIntr(TransformerMixin):
     def __init__(self, vals, cv = KFold(5, shuffle = True, random_state = 123)):
         self.vals = vals
@@ -823,3 +823,4 @@ class TargetEncoderIntr(TransformerMixin):
 
     def get_feature_names_out(self, X = None):
         return ['__'.join(val) for val, _ in self.vals]
+"""
