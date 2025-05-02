@@ -11,10 +11,10 @@ class PGS4EP9Processor(TransformerMixin):
 
     def transform(self, X, **argv):
         return pd.concat([
-            X['engine'].str.extract("(?P<HP>[0-9.]+)HP ").astype('float16'), 
-            X['engine'].str.extract("(?P<displacement>[0-9.]+)L|Liter").astype('float16'), 
-            X['engine'].str.extract("(?P<engine_type>[^ ]+ Cylinder Engine|Electric Motor| [VI][0-9]+ )").fillna('Unknown'),
-            X['engine'].str.extract(self.fuel_pat).fillna('Unknown'),
+            X['engine'].str.extract("(?P<HP>[0-9.]+)HP ").astype('float32'), 
+            X['engine'].str.extract("(?P<displacement>[0-9.]+)L|Liter").astype('float32'), 
+            X['engine'].str.extract("(?P<engine_type>[^ ]+ Cylinder Engine|Electric Motor| [VI][0-9]+ )")['engine_type'].fillna('Unknown').str.replace('Cylinder Engine', '').str.strip().astype('category'),
+            X['engine'].str.extract(self.fuel_pat).fillna('Unknown').astype('category'),
             X['engine'].astype('category')
         ], axis=1)
     

@@ -96,7 +96,10 @@ class SGCache:
         filename = os.path.join(self.result_path, cv_name + '.prd')
         if not rerun and os.path.exists(filename):
             return self.read_cv(cv_name)
-        result = sgml.cv(df, sp, hparams, config, adapter, use_gpu = use_gpu, result_proc = result_proc)
+        if result_proc is not None:
+            result = sgml.cv(df, sp, hparams, config, adapter, use_gpu = use_gpu, result_proc = result_proc)
+        else:
+            result = sgml.cv(df, sp, hparams, config, adapter, use_gpu = use_gpu)
         cv = {
             'hparams': hparams,
             'adapter': adapter,

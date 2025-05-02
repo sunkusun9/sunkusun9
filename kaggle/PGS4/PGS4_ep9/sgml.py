@@ -681,7 +681,7 @@ def save_predictor(path, model_name, adapter, objs, spec):
     model_filename = os.path.join(path, model_name + '.model')
     adapter.save_model(model_filename, objs['model'])
     if 'preprocessor' in objs:
-        pre_filename = os.path.exists(path, model_name + '.pre')
+        pre_filename = os.path.join(path, model_name + '.pre')
         joblib.dump(objs['preprocessor'], pre_filename)
     joblib.dump(spec, os.path.join(path, model_name + '.spec'))
     

@@ -448,7 +448,7 @@ class LGBMIterativeImputer(TransformerMixin):
                     X_train, X_test = X.loc[s_tgt_notna].pipe(
                         lambda x: train_test_split(x, test_size = self.validation_fraction, random_state = 123)
                     )
-            round_1[-1].fit(X_train[val], X_train[target])
+            round_1[-1].fit(X_train[val], X_train[target], categorical_feature = [i for i in val if i in self.X_cat])
             X.loc[~s_tgt_notna, target] = X.loc[~s_tgt_notna, val].pipe(lambda x: pd.Series(round_1[-1].predict(x), index = x.index, dtype = X[target].dtype))
             if X_test is not None:
                 if target in self.X_cat:
