@@ -65,15 +65,32 @@ RMSLE 이므로, Target을 Log 변환하는 것이 유리하리라 생각이 됩
 
 **Task** 입력 변수 분석
 
+- Height, Weight, Heart_Rate 에 이상치로 생각 되는 것이 보입니다.  성능과의 영향도를 살펴봅니다.
+
+- Age, 	Height,	Weight, Duration, Heart_Rate 는 정수라고 할 수 있습니다.
+
+- Height, Weight는 상관도가 0.96으로 강한 상관도 가 있고, 그 외 변수와 상관도가 떨아집니다. 
+
+- Duration, Heart_Rate, Body_Temp는 강한 상관도 가 있습니다.
+
+- Height, Weight는 Sex와 강한 상관도를 지니고 있습니다.
+
+- Age, Duration, Heart_rate, Body_Temp 는 약한 상관도가 있습니다.
+
+- 동일한 입력값이 관측되며, 동일 관측치별 Calories_Log의 표준 편차를 구해보니, 0.01 이 나옵니다. 내재된 RMSE는 0.01 근처가 되지 않을까 생각됩니다.
+
+**Task** Learning Task 설정을 위한 작업
+
+- Org 포함 여부가 Calroies를 예측는 데 도움이 될 지 살펴 봅니다.
+
 **Task** 상관도 분석
 
 **Task** Learning Task 설정 <TODO>
 
-Learning Task 설정을 위한 작업
+
 
 - Target: Calories_log 
 
-- Org 포함 여부가 Calroies를 예측는 데 도움이 될 지 살펴 봅니다.: 각 Fold 별 학습셋에 Org 데이터를 포함시켜 성능을 측정할 수 있게 합니다.
 
 4-Fold Cross Validation으로 검증을 헀을 때의 결과가 Leader Board 상의 성능과의 차이를 살펴봅니다.
 
