@@ -79,21 +79,68 @@ RMSLE 이므로, Target을 Log 변환하는 것이 유리하리라 생각이 됩
 
 - 동일한 입력값이 관측되며, 동일 관측치별 Calories_Log의 표준 편차를 구해보니, 0.01 이 나옵니다. 내재된 RMSE는 0.01 근처가 되지 않을까 생각됩니다.
 
-**Task** Learning Task 설정을 위한 작업
+**Task** Learning Task와 검증 루틴 설정
 
+- Target: Calories_log 
 - Org 포함 여부가 Calroies를 예측는 데 도움이 될 지 살펴 봅니다.
+> 원본데이터를 넣는 것은 도움은 되지 않고, 약간의 성능 저하를 야기하는 걸로 판단되어 제외를 결정합니다.
+-  4-Fold Cross Validation으로 검증을 헀을 때의 결과가 Leader Board 상의 성능과의 차이를 살펴봅니다.
+> LinearRegression의 성능이 너무 떨어져, LGBMRegressor로 만들어 테스트 해봅니다.
+> 
+> 제출시에는 원래의 Target의 역변환을 수행하고 최소값을 1이 되도록 클리핑을 합니다.
+> 
+>  CV4: 0.0605, Pubic Score: 0.5799 가 나옵니다.
 
 **Task** 상관도 분석
 
-**Task** Learning Task 설정 <TODO>
+- Sex와 Calories_log와  kruskal 분석: pvalue 2.2695e-29
+- Body_Temp 0.95, Duration 0.94, Heart_Rate 0.88 강한 상관도
+> Body_Temp 만으로 예측 4F-CB: 0.292
+> 분석: 상관도는 높은 
+- Age: 0.118 약한 상관도
+- Height: -0.042, Weight: -0.025 약한 상관도
+- 트리기반으 모델이 월등히 성능이 좋은 걸로 보면, 속성간의 상호작이 강한 걸로 보입니다.
 
+**Sub-Task**: CatBoost으로 속성간 Interaction을 조사합니다.
+- Duration과 Heart_Rate와 강한 상호작용이 있는 것으로 나옵니다.
+> 두 변수와 강한 비례 관계에 의한 상호작용으로 보입니다.
+- Duration / Heart_Rate / Body_Temp PCA로 차원 축소를 해보고 효과가 있을지 살펴봅니다.
+> PCA는 효과가 없습니다.
+- 다른 사례에서 보았듯이 수치형 변수의 타겟인코Duration과 Heart_rate
 
+**Sub-Task**: Duration과 Heart_Rate를 범주형 변수로 만들고, 두 결합된 변수를 Target Encoder를 사용하여 처리한 효과를 조사합니다.
 
-- Target: Calories_log 
+**Sub-Task**: PolyNomial Transform의 효과성을 찾아봅니다. 
+- 연속형 변수간의 곱을 추가하여 LinearRegression에 적용했을 때, 효과성을 살펴봅니다.
+- 2차 다항을 추가했을 때 CV가 0.097의 효과가 있었습니다.(O) CV: 0.0934
+- 역수로 2차 다항을 구성하니 성능개선 효과가 더 보입니다. (O) CV: 0.0801
+- 역수를 취한 변수를 추가할 때 성능 개선을 살펴봅니다. (X) CV: 0.1371
+- 2차항에 하나는 역수를 곱한 3차항으로 성능 개선을 살펴봅니다. (O) CV: 0.0873
+- 1차항에 2차항을 역수로 곱한 3차항으로 성능 개선을 살펴봅니다. (O) CV: 0.080
+> 다중 공선성이 있는 속성이 보입니다.
+- 3차항으로 성능 개선을 살펴봅니다. (?) CV: 0.0998
 
-
-4-Fold Cross Validation으로 검증을 헀을 때의 결과가 Leader Board 상의 성능과의 차이를 살펴봅니다.
+> - 분석결과
+> 다항식 변환은 효과성이 보입니다. 다항 변수를 만들고 속성 선택을 하여 변수를 추려냈을 때의 성능 개선 효과를 살펴볼만 합니다.
 
 **Task** 사례 분석
 
+|Article|Ver.|Feature|검증법|OOF|Public|
+|------|--|---|
+|[Only XGBoost](https://www.kaggle.com/code/jiaoyouzhang/calorie-only-xgboost)|V.4|XGBoost 만을 사용, max_depth: 10, colsample_bytree=0.7, subsample=0.9, early_stopping을 건 strong learner<br/>깔끔함, XGB의 하이퍼파라미터 구성 참조|5-Fold|0.0599|0.05692|
+|[S05E05 \| Calorie Expenditure Prediction \| Ridge](https://www.kaggle.com/code/ravaghi/s05e05-calorie-expenditure-prediction-ridge)|V.16|XGB, CB, LGB, LGB-goss(?), Autoglu-on, ... 5 fold oof predict에 Ridge를 Meta Model로 사용하여 Stacking<br/> 검증의 성능은 좋지만, 첫번째 Article 보다는 결과가 안나옴 |5-Fold|0.0590|0.05698|
+|[NN - MLP Starter - \[CV 0.0608\]](https://www.kaggle.com/code/cdeotte/nn-mlp-starter-cv-0-0608)|V.1|[32 swish Batch Norm, 64 swish Batch Norm, 32 swish Batch Norm, 1 ㅣlinear <br/> ReduceLOnPlateau, factor = 0.5, patience = 3 min_lr = 1e-6, EarlyStooping patienct = 10, restore_best_weights = True, mode = 'min'] 구조의 Perceptron|5-Fold|0.608|0.5824|
+
+- Sex를 Boolean 형태로 변환
+
+- Public Score에 약간의 Bias가 있다고 생각이 듭니다.
+
+- NN도 잘 동작합니다.
+
 **Experiment** 
+
+1. 다항 속성 생성 및 선택
+
+2. XGB, LGB, CB, NN, .. 등등의 ML 모델 생성 및 잔차 분석
+> Boost 모델에서는 Outlier와 공선성이 있음을 고려하여 컬럼 샘플링과 데이터포인트 샘플링의 효과성을 살펴볼 필요가 있습니다.
+> 상호작용
