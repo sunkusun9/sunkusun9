@@ -165,6 +165,9 @@ def gb_valid_config_valid_only(train_set, valid_set):
 def pass_learning_result(train_result):
     return train_result
 
+def predict_learning_result(train_result, df):
+    return train_result['predictor'](df).values
+
 def lgb_learning_result(train_result):
     """
     Process LightGBM model results to extract evaluation metrics and feature importances.
@@ -196,7 +199,7 @@ def lgb_learning_result(train_result):
             lambda x: x.reindex(columns = pd.MultiIndex.from_tuples(x.columns.tolist(), names=['set', 'metric'])).swaplevel(axis=1)
         ) if hasattr(train_result['model'], 'evals_result_') and len(train_result['model'].evals_result_) > 0 else None, 
         'feature_importance': pd.Series(train_result['model'].feature_importances_, index=train_result['variables']).sort_values(),
-        **{k: v for k, v in train_result.items() if k != 'model'}
+        **{k: v for k, v in train_result.items() if k not in ['model', 'predictor']}
     }
 
 def xgb_learning_result(train_result):
@@ -211,7 +214,7 @@ def xgb_learning_result(train_result):
         'feature_importance': pd.Series(
             train_result['model'].feature_importances_, index=train_result['variables']
         ).sort_values(),
-        **{k: v for k, v in train_result.items() if k != 'model'}
+        **{k: v for k, v in train_result.items() if k not in ['model', 'predictor']}
     }
 
 def cb_learning_result(train_result):
@@ -226,7 +229,7 @@ def cb_learning_result(train_result):
         'feature_importance': pd.Series(
             train_result['model'].feature_importances_, index=train_result['variables']
         ).sort_values(),
-        **{k: v for k, v in train_result.items() if k != 'model'}
+        **{k: v for k, v in train_result.items() if k not in ['model', 'predictor']}
     }
 
 def gb_shap_learning_result(train_result, df, interaction = True):
@@ -631,10 +634,12 @@ def cv_model(sp, model, model_params, df, X, y, predict_func, score_func, return
             m = result['model']
         if target_invfunc is None:
             target_invfunc = lambda _, x: x
-        valid_prds.append(target_invfunc(df_valid, predict_func(m, df_valid, X)))
+        predictor = lambda x: target_invfunc(x, predict_func(m, x, X))
+        result['predictor'] = predictor
+        valid_prds.append(predictor(df_valid))
         if return_train_scores:
             train_scores.append(
-                score_func(df_cv_train, target_invfunc(df_cv_train, predict_func(m, df_cv_train, X)))
+                score_func(df_cv_train, predictor(df_cv_train))
             )
         valid_scores.append(score_func(df_valid, valid_prds[-1]))
         if result_proc is not None:

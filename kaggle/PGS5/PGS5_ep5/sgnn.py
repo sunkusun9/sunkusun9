@@ -27,7 +27,7 @@ def nn_valid_config(train_set, valid_set):
 def nn_learning_result(train_result):
     return {
         'history': pd.DataFrame(train_result['model'].history_),
-        **{k: v for k, v in train_result.items() if k != 'model'}
+        **{k: v for k, v in train_result.items() if k not in ['model', 'predictor']}
     }
 
 def fit_tf_model_to_Y(

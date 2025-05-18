@@ -6,6 +6,7 @@ import lightgbm as lgb
 import catboost as cb
 import sgml
 import pandas as pd
+import sgnn
 
 X_cat = ['Sex']
 X_num = ['Age', 'Height', 'Weight', 'Duration', 'Heart_Rate', 'Body_Temp']
@@ -31,3 +32,10 @@ xgb_adapter = sgml.XGBAdapter(xgb.XGBRegressor)
 lgb_adapter = sgml.LGBMAdapter(lgb.LGBMRegressor)
 cb_adapter = sgml.CBAdapter(cb.CatBoostRegressor)
 lr_adapter = sgml.SklearnAdapter(LinearRegression)
+nn_adapter = sgnn.NNAdapter(sgnn.NNRegressor, progress = 100)
+
+def scheduler(epoch, lr):
+    if epoch < 10:
+        return lr
+    else:
+        return lr * np.cos((epoch - 9) / 25 * np.pi)
