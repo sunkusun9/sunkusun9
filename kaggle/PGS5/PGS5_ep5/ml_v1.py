@@ -6,6 +6,7 @@ import lightgbm as lgb
 import catboost as cb
 import sgml
 import pandas as pd
+import numpy as np
 import sgnn
 
 X_cat = ['Sex']
