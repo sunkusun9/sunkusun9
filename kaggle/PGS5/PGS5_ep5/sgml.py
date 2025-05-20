@@ -580,7 +580,7 @@ def cv_model(sp, model, model_params, df, X, y, predict_func, score_func, return
             return train scores
         preprocessor: sklearn.preprocessing. 
             preprocessor. it will be connected using make_pipeline
-        fit_params: dict
+        train_params: dict
             parameters for fit
         sp_y: str
             splitter y value name

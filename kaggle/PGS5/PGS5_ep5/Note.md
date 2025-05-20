@@ -207,7 +207,13 @@ RMSE: 0.0681
 - Kaggle 사례에서 Duration 을 Binning해서 계층적 5-Fold의 계층적 분리를 하고 있습니다. 검증 결과의 들쑥날쑥함이 Duration의 불균일성 때문에 발생할 수 있으니,
 좀더 실제에 맞는 검증결과와 다른 Kaggler 비교할 수 있도록 5-Fold Cross Validation을 사용하는 것이 나을 듯합니다.
 
-
+- Ensemble6: 기존 모델에서 검증 방법을 달리해서 5-Fold 검증의 OOF 데이터로 LinearRegression을 Meta 모델로 Stacking 모델을 만들었습니다. CV: 0.05903 Public: 0.05702
+> 생각 보다는 좋은 결과는 아닙니다. 하지만 Kaggler들이 대부분 5-Fold CV를 사용하고 있으니 비교를 위해 사용합니다.
+>
+> 5-CV의 결과가 0.0593 보인 Kaggler의 결과가 0.05680, 0.0599 인 Kaggler가 0.05680 등등 몇가지 사례를 놓고 보자면, CV와 Public Score와 격차가 있어 보입니다.
+>
+- Ensemble7: 2차 곱을 통한 속성 몇개를 더 넣어 LGB, XGB, CB 모델을 학습시켰습니다. 그리고 Stack 단계에서 새로 만든 전진선택기로 속성선택을 하여 제출했습니다.  CV: 0.05898, Public: 0.05693
+> 성능 개선이 있어 결과를 선택했습니다.
 
 5. Kaggle 사례 분석을 통한 ML
 
@@ -220,6 +226,11 @@ RMSE: 0.0681
 5. 
 
 
-6. 
+6. More Feature Engineering
+
+- Target Encoder의 효과성을 LinearRegression 모델을 통해 살펴 봅니다.
+
+- Target 
+
 
 7.
