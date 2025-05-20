@@ -1,6 +1,7 @@
 from sklearn.pipeline import make_pipeline
 import sgpp
 import polars as pl
+import numpy as np
 
 from itertools import combinations, product
 
@@ -42,7 +43,7 @@ var_list2.extend([(i, pl.col(a) * pl.col(b)) for i, (a, b) in X_sqrt])
 p = make_pipeline(
     sgpp.PolarsProcessor(),
     sgpp.ExprProcessor({
-        **{'Sex': pl.col('Sex') == 'male', 'const': 1},
+        **{'Sex': pl.col('Sex') == 'male', 'const': 1, 'duration_bin': pl.col('Duration').qcut(10, labels = [str(i) for i in np.arange(10)]).fill_null("0")},
         **{k: v for k, v in var_list}
     }),
     sgpp.ExprProcessor({
