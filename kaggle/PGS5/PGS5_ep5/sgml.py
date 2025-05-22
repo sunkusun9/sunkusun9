@@ -475,7 +475,10 @@ def train_model(model, model_params, df_train, X, y, valid_splitter=None, prepro
     if preprocessor is not None:
         preprocessor = clone(preprocessor)
         if valid_splitter is not None:
-            df_train, df_valid = valid_splitter(df_train)
+            if valid_splitter =="oof":
+                df_valid = argv['valid']
+            else:
+                df_train, df_valid = valid_splitter(df_train)
         X_train = preprocessor.fit_transform(df_train[X], df_train[y])
         n_categ = argv.get('categorical_num', 0)
         if n_categ > 0:
@@ -486,7 +489,10 @@ def train_model(model, model_params, df_train, X, y, valid_splitter=None, prepro
             X_valid = preprocessor.transform(df_valid[X])
     else:
         if valid_splitter is not None:
-            df_train, df_valid = valid_splitter(df_train)
+            if valid_splitter =="oof":
+                df_valid = argv['valid']
+            else:
+                df_train, df_valid = valid_splitter(df_train)
             X_valid = df_valid[X]
         X_train = df_train[X]
         result['variables'] = X.copy()
@@ -627,6 +633,9 @@ def cv_model(sp, model, model_params, df, X, y, predict_func, score_func, return
         df_cv_train, df_valid = df.iloc[train_idx], df.iloc[valid_idx]
         if train_data_proc != None:
             df_cv_train = train_data_proc(df_cv_train)
+        if valid_splitter == "oof"
+            train_params = train_params.copy()
+            train_params['valid'] = df_valid
         result = train_model(model, model_params, df_cv_train, X, y, preprocessor=preprocessor, target_func=target_func, **train_params)
         if 'preprocessor' in result:
             m = make_pipeline(result['preprocessor'], result['model'])
@@ -749,7 +758,9 @@ class LGBMAdapter(BaseAdapter):
     def adapt(self, hparams, is_train=False, use_gpu = False, **argv):
         X, X_cat_feature, transformers = get_cat_transformers_ord(hparams)
         validation_fraction = hparams.get('validation_fraction', 0)
-        if validation_fraction > 0:
+        if validation_fraction == "oof":
+            validation_splitter = "oof"
+        elif validation_fraction > 0:
             if argv.get('validation_splitter', None) is None:
                 validation_splitter = lambda x: train_test_split(x, test_size=validation_fraction, random_state=123)
             else:
@@ -773,7 +784,7 @@ class LGBMAdapter(BaseAdapter):
                     'callbacks': self.callbacks
                 },
                 'valid_splitter': validation_splitter,
-                'valid_config_proc': gb_valid_config if validation_fraction > 0 or argv.get('validate_train', False) else None,
+                'valid_config_proc': gb_valid_config if validation_fraction != "oof" and (validation_fraction > 0 or argv.get('validate_train', False)) else None,
             },
             'result_proc': argv.get('result_proc', lgb_learning_result),
         }
@@ -791,7 +802,9 @@ class XGBAdapter(BaseAdapter):
         else:
             X, _, transformers = get_cat_transformers_ohe(hparams)
         validation_fraction = hparams.get('validation_fraction', 0)
-        if validation_fraction > 0:
+        if validation_fraction == "oof":
+            validation_splitter = "oof"
+        elif validation_fraction > 0:
             if argv.get('validation_splitter', None) is None:
                 validation_splitter = lambda x: train_test_split(x, test_size=validation_fraction, random_state=123)
             else:
@@ -820,7 +833,7 @@ class XGBAdapter(BaseAdapter):
             'preprocessor': preprocessor,
             'train_params': {
                 'valid_splitter': validation_splitter,
-                'valid_config_proc': gb_valid_config if validation_fraction > 0 or argv.get('validate_train', False) else None,
+                'valid_config_proc': gb_valid_config if validation_fraction != "oof" and (validation_fraction > 0 or argv.get('validate_train', False)) else None,
                 'fit_params': {'verbose': False},
                 'categorical_num': len(X_cat_feature)
             },
@@ -836,7 +849,9 @@ class CBAdapter(BaseAdapter):
     def adapt(self, hparams, is_train=False, use_gpu = False, **argv):
         X, X_cat_feature, transformers = get_cat_transformers_pt(hparams)
         validation_fraction = hparams.get('validation_fraction', 0)
-        if validation_fraction > 0:
+        if validation_fraction == "oof":
+            validation_splitter = "oof"
+        elif validation_fraction > 0:
             if argv.get('validation_splitter', None) is None:
                 validation_splitter = lambda x: train_test_split(x, test_size=validation_fraction, random_state=123)
             else:
@@ -867,7 +882,7 @@ class CBAdapter(BaseAdapter):
             'preprocessor': preprocessor,
             'train_params': {
                 'valid_splitter': validation_splitter,
-                'valid_config_proc': valid_config if validation_fraction > 0 or argv.get('validate_train', False) else None,
+                'valid_config_proc': valid_config if validation_fraction != "oof" and (validation_fraction > 0 or argv.get('validate_train', False)) else None,,
                 'fit_params':  fit_params
             },
             'result_proc': argv.get('result_proc', cb_learning_result),
