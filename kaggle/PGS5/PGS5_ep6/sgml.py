@@ -22,10 +22,8 @@ import shap
 
 try:
     from tqdm.notebook import tqdm
-    from IPython.display import clear_output
 except:
     from tqdm import tqdm
-    clear_output = None
 
 
 def get_X_from_transformer(transformers, ex=None):
@@ -329,8 +327,6 @@ class LGBMFitProgressbar:
                 self.progress_bar.update(self.prog % self.update_cycle)
                 self.progress_bar.close()
                 del self.progress_bar
-                if clear_output is not None:
-                    clear_output()
                 self.progress_bar = None
             return
         self.progress_bar.update(self.update_cycle)
@@ -360,8 +356,6 @@ class LGBMFitProgressbar:
         if self.total_iteration - 1 == env.iteration - env.begin_iteration:
             self.progress_bar.close()
             del self.progress_bar
-            if clear_output is not None:
-                clear_output()
             self.progress_bar = None
 
 
@@ -426,8 +420,6 @@ try:
             self.progress_bar.close()
             del self.progress_bar
             self.progress_bar = None
-            if clear_output is not None:
-                clear_output()
             return model
 except:
     pass
@@ -488,8 +480,6 @@ class CatBoostFitProgressbar:
         if self.progress_bar is not None:
             self.progress_bar.close()
             del self.progress_bar
-            if clear_output is not None:
-                clear_output()
             self.progress_bar = None
 
 
@@ -631,8 +621,6 @@ class ProgressCallBack(BaseCallBack):
     def end(self):
         self.progress_bar.close()
         del self.progress_bar
-        if clear_output is not None:
-            clear_output()
         self.progress_bar = None
 
 
