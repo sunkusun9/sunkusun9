@@ -329,8 +329,6 @@ class LGBMFitProgressbar:
                 self.progress_bar.update(self.prog % self.update_cycle)
                 self.progress_bar.close()
                 del self.progress_bar
-                if clear_output is not None:
-                    clear_output()
                 self.progress_bar = None
             return
         self.progress_bar.update(self.update_cycle)
@@ -360,8 +358,6 @@ class LGBMFitProgressbar:
         if self.total_iteration - 1 == env.iteration - env.begin_iteration:
             self.progress_bar.close()
             del self.progress_bar
-            if clear_output is not None:
-                clear_output()
             self.progress_bar = None
 
 
@@ -426,8 +422,6 @@ try:
             self.progress_bar.close()
             del self.progress_bar
             self.progress_bar = None
-            if clear_output is not None:
-                clear_output()
             return model
 except:
     pass
@@ -488,8 +482,6 @@ class CatBoostFitProgressbar:
         if self.progress_bar is not None:
             self.progress_bar.close()
             del self.progress_bar
-            if clear_output is not None:
-                clear_output()
             self.progress_bar = None
 
 
@@ -776,7 +768,10 @@ def train(df, hparams, config, adapter, use_gpu=False, **argv):
                             **hparams.get('train_data_proc_param', {}))
     else:
         def data_proc(x): return x
-    return train_model(df_train=data_proc(df), **hparam_, **config, **train_params), hparam_['X']
+    result = train_model(df_train=data_proc(df), **hparam_, **config, **train_params), hparam_['X']
+    if clear_output is not None:
+        clear_output()
+    return result
 
 
 def save_predictor(path, model_name, adapter, objs, spec):
@@ -873,6 +868,9 @@ class LGBMAdapter(BaseAdapter):
             X = X + hparams.get('X_pre', [])
             preprocessor = make_pipeline(preprocessor, ColumnTransformer(
                 transformers)) if not is_empty_transformer(transformers) else preprocessor
+        if use_gpu:
+            hparams = hparams.copy()
+            hparams['device'] = 'cuda'
         return {
             'model': self.model,
             'model_params': {'verbose': -1, **hparams['model_params']},
