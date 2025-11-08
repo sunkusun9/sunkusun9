@@ -22,8 +22,10 @@ import shap
 
 try:
     from tqdm.notebook import tqdm
+    from IPython.display import clear_output
 except:
     from tqdm import tqdm
+    clear_output = None
 
 
 def get_X_from_transformer(transformers, ex=None):
@@ -621,6 +623,8 @@ class ProgressCallBack(BaseCallBack):
     def end(self):
         self.progress_bar.close()
         del self.progress_bar
+        if clear_output is not None:
+            clear_output()
         self.progress_bar = None
 
 
@@ -764,7 +768,10 @@ def train(df, hparams, config, adapter, use_gpu=False, **argv):
                             **hparams.get('train_data_proc_param', {}))
     else:
         def data_proc(x): return x
-    return train_model(df_train=data_proc(df), **hparam_, **config, **train_params), hparam_['X']
+    result = train_model(df_train=data_proc(df), **hparam_, **config, **train_params), hparam_['X']
+    if clear_output is not None:
+        clear_output()
+    return result
 
 
 def save_predictor(path, model_name, adapter, objs, spec):
@@ -861,6 +868,9 @@ class LGBMAdapter(BaseAdapter):
             X = X + hparams.get('X_pre', [])
             preprocessor = make_pipeline(preprocessor, ColumnTransformer(
                 transformers)) if not is_empty_transformer(transformers) else preprocessor
+        if use_gpu:
+            hparams = hparams.copy()
+            hparams['device'] = 'cuda'
         return {
             'model': self.model,
             'model_params': {'verbose': -1, **hparams['model_params']},

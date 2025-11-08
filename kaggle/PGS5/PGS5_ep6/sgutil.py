@@ -99,6 +99,7 @@ class SGCache:
 
     def cv_result(self, cv_name, df, sp, hparams, config, adapter, use_gpu = False, rerun = False, result_proc = None, **desc):
         filename = os.path.join(self.result_path, cv_name + '.prd')
+        prev_cv = None
         if os.path.exists(filename):
             prev_cv = self.read_cv(cv_name)
             if not rerun:
@@ -108,8 +109,6 @@ class SGCache:
             result = sgml.cv(df, sp, hparams, config, adapter, use_gpu = use_gpu, result_proc = result_proc)
         else:
             result = sgml.cv(df, sp, hparams, config, adapter, use_gpu = use_gpu)
-        if np.mean(result['valid_scores']) < prev_cv['valid_scores']:
-            return prev_cv
         cv = {
             'hparams': hparams,
             'adapter': adapter,
@@ -117,9 +116,19 @@ class SGCache:
             'model_result': result.get('model_result', None),
             'desc': desc
         }
+        if (
+            prev_cv is not None and 
+            len(result['valid_scores']) == len(prev_cv['valid_scores']) and 
+            np.mean(result['valid_scores']) < np.mean(prev_cv['valid_scores'])
+        ):
+            return cv
         joblib.dump(cv, os.path.join(self.result_path, cv_name + '.cv'))
         joblib.dump(result['valid_prd'].values, filename)
         return cv
+
+    def del_cv(self, cv_name):
+        os.remove(os.path.join(self.result_path, cv_name + '.cv'))
+        os.remove(os.path.join(self.result_path, cv_name + '.prd'))
 
     def read_prd(self, cv_name, index = None, columns = None):
         prd = joblib.load(os.path.join(self.result_path, cv_name + '.prd'))

@@ -29,9 +29,9 @@ def scheduler(epoch, lr, decay_epoch = 10, total_epoch = 30):
 def get_validation_splitter(validation_fraction):
     return lambda x: train_test_split(x, test_size = validation_fraction, stratify = x[target + '_l'])
 
-def train_data_proc(x, org = None):
+def train_data_proc(x, df_org, org = True):
     if org is not None:
-        return pd.concat([x, org], axis = 0)
+        return pd.concat([x, df_org], axis = 0)
     else:
         return x
 
@@ -44,7 +44,6 @@ config = {
     'validation_splitter': get_validation_splitter,
     'progress_callback': sgml.ProgressCallBack(), 
     'return_train_scores': True,
-    'train_data_proc': train_data_proc,
     'y': 'Fertilizer_Name_l',
 }
 
