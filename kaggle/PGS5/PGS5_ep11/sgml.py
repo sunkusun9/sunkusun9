@@ -307,44 +307,6 @@ class CatBoostFitProgressbar:
             self.progress_bar = None
 
 
-def train_model(model, model_params, df_train, X, y, valid_splitter=None, fit_params={}, valid_config_proc=None, **argv):
-    df_valid, X_valid = None, None
-    result = {}
-    if (valid_splitter is not None and valid_splitter != "oof") or (valid_splitter == "oof" and 'valid' in argv):
-        if valid_splitter == "oof":
-            df_valid = argv['valid']
-        else:
-            df_train, df_valid = valid_splitter(df_train)
-        X_valid = df_valid[X]
-    X_train = df_train[X]
-    result['variables'] = X.copy()
-    y_train = df_train[y]
-    if df_valid is not None:
-        y_valid = df_valid[y]
-    if valid_config_proc is not None:
-        if X_valid is not None:
-            model_params_2, fit_params_2 = valid_config_proc(
-                (X_train, y_train), (X_valid, y_valid)
-            )
-            result['valid_shape'] = X_valid.shape
-        else:
-            model_params_2, fit_params_2 = valid_config_proc(
-                (X_train, y_train), None
-            )
-    else:
-        model_params_2, fit_params_2 = {}, {}
-    result['train_shape'] = X_train.shape
-    result['target'] = y
-    m = model(**model_params, **model_params_2)
-    m.fit(X_train, y_train, **fit_params, **fit_params_2)
-    del X_train, y_train
-    if df_valid is not None:
-        del X_valid, y_valid, df_valid
-    gc.collect()
-    result['model'] = m
-    return result
-
-
 class BaseCallBack:
     def start(self, n_splits):
         pass
@@ -490,6 +452,44 @@ def load_predictor(path, model_name, adapter):
         return None
 
 
+def train_model(model, model_params, df_train, X, y, valid_splitter=None, fit_params={}, valid_config_proc=None, **argv):
+    df_valid, X_valid = None, None
+    result = {}
+    if (valid_splitter is not None and valid_splitter != "oof") or (valid_splitter == "oof" and 'valid' in argv):
+        if valid_splitter == "oof":
+            df_valid = argv['valid']
+        else:
+            df_train, df_valid = valid_splitter(df_train)
+        X_valid = df_valid[X]
+    X_train = df_train[X]
+    result['variables'] = X.copy()
+    y_train = df_train[y]
+    if df_valid is not None:
+        y_valid = df_valid[y]
+    if valid_config_proc is not None:
+        if X_valid is not None:
+            model_params_2, fit_params_2 = valid_config_proc(
+                (X_train, y_train), (X_valid, y_valid)
+            )
+            result['valid_shape'] = X_valid.shape
+        else:
+            model_params_2, fit_params_2 = valid_config_proc(
+                (X_train, y_train), None
+            )
+    else:
+        model_params_2, fit_params_2 = {}, {}
+    result['train_shape'] = X_train.shape
+    result['target'] = y
+    m = model(**model_params, **model_params_2)
+    m.fit(X_train, y_train, **fit_params, **fit_params_2)
+    del X_train, y_train
+    if df_valid is not None:
+        del X_valid, y_valid, df_valid
+    gc.collect()
+    result['model'] = m
+    return result
+
+
 class BaseAdapter():
     def save_model(self, filename, model):
         joblib.dump(model, filename)
@@ -522,19 +522,6 @@ class LGBMAdapter(BaseAdapter):
             self.callbacks.append(LGBMFitProgressbar(update_cycle=progress))
 
     def adapt(self, hparams, is_train=False, use_gpu=False, **argv):
-        X, X_cat_feature, transformers = get_cat_transformers_ord(hparams)
-        validation_fraction = hparams.get('validation_fraction', 0)
-        if validation_fraction == "oof":
-            validation_splitter = "oof"
-        elif validation_fraction > 0:
-            if argv.get('validation_splitter', None) is None:
-                def validation_splitter(x): return train_test_split(
-                    x, test_size=validation_fraction, random_state=123)
-            else:
-                validation_splitter = argv.get(
-                    'validation_splitter')(validation_fraction)
-        else:
-            validation_splitter = None
         if use_gpu:
             hparams = hparams.copy()
             hparams['device'] = 'cuda'
@@ -547,8 +534,6 @@ class LGBMAdapter(BaseAdapter):
                     'categorical_feature': X_cat_feature,
                     'callbacks': self.callbacks
                 },
-                'valid_splitter': validation_splitter,
-                'valid_config_proc': gb_valid_config if validation_fraction == "oof" or validation_fraction > 0 or argv.get('validate_train', False) else None,
             },
             'result_proc': argv.get('result_proc', lgb_learning_result),
         }
@@ -561,23 +546,6 @@ class XGBAdapter(BaseAdapter):
         self.progress = progress
 
     def adapt(self, hparams, is_train=False, use_gpu=False, **argv):
-        X_cat_feature = []
-        if hparams.get('model_params', {}).get('enable_categorical', False):
-            X, X_cat_feature, transformers = get_cat_transformers_ord(hparams)
-        else:
-            X, _, transformers = get_cat_transformers_ohe(hparams)
-        validation_fraction = hparams.get('validation_fraction', 0)
-        if validation_fraction == "oof":
-            validation_splitter = "oof"
-        elif validation_fraction > 0:
-            if argv.get('validation_splitter', None) is None:
-                def validation_splitter(x): return train_test_split(
-                    x, test_size=validation_fraction, random_state=123)
-            else:
-                validation_splitter = argv.get(
-                    'validation_splitter')(validation_fraction)
-        else:
-            validation_splitter = None
         callbacks = list()
         if self.progress > 0:
             callbacks.append(
@@ -593,8 +561,6 @@ class XGBAdapter(BaseAdapter):
             },
             'X': X,
             'train_params': {
-                'valid_splitter': validation_splitter,
-                'valid_config_proc': gb_valid_config if validation_fraction == "oof" or validation_fraction > 0 or argv.get('validate_train', False) else None,
                 'fit_params': {'verbose': False},
                 'categorical_num': len(X_cat_feature)
             },
@@ -609,27 +575,11 @@ class CBAdapter(BaseAdapter):
         self.progress = progress
 
     def adapt(self, hparams, is_train=False, use_gpu=False, **argv):
-        X, X_cat_feature, transformers = get_cat_transformers_pt(hparams)
-        validation_fraction = hparams.get('validation_fraction', 0)
-        if validation_fraction == "oof":
-            validation_splitter = "oof"
-        elif validation_fraction > 0:
-            if argv.get('validation_splitter', None) is None:
-                def validation_splitter(x): return train_test_split(
-                    x, test_size=validation_fraction, random_state=123)
-            else:
-                validation_splitter = argv.get(
-                    'validation_splitter')(validation_fraction)
-        else:
-            validation_splitter = None
-
-        if (not use_gpu) and self.progress > 0:
-            fit_params = {'callbacks': [CatBoostFitProgressbar(
-                n_estimators=hparams['model_params'].get('n_estimators', 100), update_cycle=self.progress)]}
-            valid_config = gb_valid_config
-        else:
-            fit_params = {}
-            valid_config = gb_valid_config_valid_only if validation_fraction != "oof" and validation_fraction > 0 else gb_valid_config
+        fit_params = {
+            'callbacks': [
+                CatBoostFitProgressbar(n_estimators=hparams['model_params'].get('n_estimators', 100), update_cycle=self.progress)
+            ]
+        }
         return {
             'model': self.model,
             'model_params': {
@@ -639,8 +589,6 @@ class CBAdapter(BaseAdapter):
             },
             'X': X,
             'train_params': {
-                'valid_splitter': validation_splitter,
-                'valid_config_proc': valid_config if validation_fraction == "oof" or validation_fraction > 0 or argv.get('validate_train', False) else None,
                 'fit_params':  fit_params
             },
             'result_proc': argv.get('result_proc', cb_learning_result),
