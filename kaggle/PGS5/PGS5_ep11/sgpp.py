@@ -1,4 +1,4 @@
-from sklearn.base import TransformerMixin
+from sklearn.base import BaseEstimator, TransformerMixin
 import pandas as pd
 import polars as pl
 import numpy as np
@@ -15,13 +15,18 @@ try:
 except:
     from tqdm import tqdm
 
-class ApplyWrapper(TransformerMixin):
+class ApplyWrapper(TransformerMixin, BaseEstimator):
     def __init__(self, transformer, vals, suffix = None, postfix = None):
         self.vals = vals
         self.transformer = transformer
         self.suffix = suffix
         self.postfix = postfix
 
+    def __sklearn_tags__(self):
+        # BaseEstimator 쪽 태그를 기반으로 가져오고 수정
+        tags = super().__sklearn_tags__()
+        return tags
+    
     def fit(self, X, y = None):
         self.transformer.fit(X[self.vals], y)
         self.fitted_ = True
@@ -64,7 +69,7 @@ class ApplyWrapper(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return self.columns_
 
-class CatArrangerFreq(TransformerMixin):
+class CatArrangerFreq(TransformerMixin, BaseEstimator):
     def __init__(self, min_frequency, unknown_value = None, na_value = None):
         self.min_frequency = min_frequency
         self.unknown_value = unknown_value
@@ -141,7 +146,7 @@ class CatArrangerFreq(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return list(self.c_types_)
 
-class CatArrangerFreqNearest(TransformerMixin):
+class CatArrangerFreqNearest(TransformerMixin, BaseEstimator):
     def __init__(self, min_frequency, na_value = None):
         self.min_frequency = min_frequency
         self.na_value = na_value
@@ -194,7 +199,7 @@ class CatArrangerFreqNearest(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return list(self.c_types_)
 
-class CatOOVFilter(TransformerMixin):
+class CatOOVFilter(TransformerMixin, BaseEstimator):
     def __init__(self):
         pass
     def fit(self, X, y = None):
@@ -218,7 +223,7 @@ class CatOOVFilter(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return list(self.s_dtype_.keys())
 
-class FrequencyEncoder(TransformerMixin):
+class FrequencyEncoder(TransformerMixin, BaseEstimator):
     def __init__(self, na_frequency = 0, dtype = 'int'):
         self.na_frequency = 0
         self.dtype = dtype
@@ -248,7 +253,7 @@ class FrequencyEncoder(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return list(self.freq_.keys())
 
-class CatCombiner(TransformerMixin):
+class CatCombiner(TransformerMixin, BaseEstimator):
     def __init__(self, combine_features):
         self.combine_features = combine_features
 
@@ -273,7 +278,7 @@ class CatCombiner(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return [i for _, i in self.combine_features]
 
-class CatCombiner2(TransformerMixin):
+class CatCombiner2(TransformerMixin, BaseEstimator):
     def __init__(self, combine_features):
         self.combine_features = combine_features
 
@@ -301,7 +306,7 @@ class CatCombiner2(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return self.columns_
 
-class LGBMImputer(TransformerMixin):
+class LGBMImputer(TransformerMixin, BaseEstimator):
     def __init__(self, lgb_model, hparams, X_num, X_cat, target, na_value = np.nan):
         self.lgb_model = lgb_model
         self.hparams = hparams
@@ -376,7 +381,7 @@ class ImputerProgressBar():
             del self.iter_progress_bar
             self.iter_progress_bar = None
 
-class LGBMIterativeImputer(TransformerMixin):
+class LGBMIterativeImputer(TransformerMixin, BaseEstimator):
     def __init__(self, hparams, X_num, X_cat, targets, na_value = None, hparams_dic = {}, na_value_dic = {}, 
                  n_iter = 2, validation_fraction = 0, progress_callback=ImputerProgressBar()):
         self.hparams = hparams
@@ -504,7 +509,7 @@ class LGBMIterativeImputer(TransformerMixin):
         return [target]
 
 
-class CatArrangerDic(TransformerMixin):
+class CatArrangerDic(TransformerMixin, BaseEstimator):
     def __init__(self, dic):
         self.dic = dic
 
@@ -535,7 +540,7 @@ class CatArrangerDic(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return list(self.repl_dic_.keys())
 
-class CatArrangerDics(TransformerMixin):
+class CatArrangerDics(TransformerMixin, BaseEstimator):
     def __init__(self, dics):
         self.dics = dics
 
@@ -566,7 +571,7 @@ class CatArrangerDics(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return list(self.repl_dic_.keys())
 
-class EvalTransformer(TransformerMixin):
+class EvalTransformer(TransformerMixin, BaseEstimator):
     def __init__(self, expressions, local_dict = None):
         self.expressions = expressions
         self.local_dict = local_dict
@@ -593,7 +598,7 @@ class EvalTransformer(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return [i for i, _ in self.expressions]
 
-class TypeCaster(TransformerMixin):
+class TypeCaster(TransformerMixin, BaseEstimator):
     def __init__(self, dtype):
         self.dtype = dtype
 
@@ -616,11 +621,11 @@ class TypeCaster(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return self.names_
 
-class PolarsProcessor(TransformerMixin):
+class PolarsProcessor(TransformerMixin, BaseEstimator):
     def __init__(self, predefined_types = {}, read_method = 'read_csv'):
         self.predefined_types = predefined_types
         self.read_method = read_method
-
+    
     def fit(self, X, y = None):
         if type(X) is list:
             self.df_type_ = dproc.merge_type_df([
@@ -654,7 +659,7 @@ class PolarsProcessor(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return [i for i in self.pl_type_.keys()]
 
-class ExprProcessor(TransformerMixin):
+class ExprProcessor(TransformerMixin, BaseEstimator):
     def __init__(self, dict_expr, with_columns = True):
         self.dict_expr = dict_expr
         self.with_columns = with_columns
@@ -665,7 +670,7 @@ class ExprProcessor(TransformerMixin):
             self.columns = X.columns
         self.fitted_ = True
         return self
-        
+    
     def transform(self, X):
         if self.with_columns:
             return X.with_columns(**{
@@ -673,7 +678,7 @@ class ExprProcessor(TransformerMixin):
             })
         else:
             return X.select(**self.dict_expr)
-
+    
     def get_params(self, deep=True):
         return {
             'dict_expr': self.dict_expr,
@@ -686,7 +691,7 @@ class ExprProcessor(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return self.columns + list(self.dict_expr.keys())
 
-class PandasConverter(TransformerMixin):
+class PandasConverter(TransformerMixin, BaseEstimator):
     def __init__(self, index_col = None):
         self.index_col = index_col
         self.columns_ = None
@@ -695,7 +700,7 @@ class PandasConverter(TransformerMixin):
         self.columns_ = [i for i in X.columns if i != self.index_col]
         self.fitted_ = True
         return self
-
+    
     def transform(self, X):
         df = X.to_pandas()
         if self.index_col is not None and self.index_col in df.columns:
@@ -714,7 +719,7 @@ class PandasConverter(TransformerMixin):
         return self.columns_
 
 
-class JoinEncoder(TransformerMixin):
+class JoinEncoder(TransformerMixin, BaseEstimator):
     def __init__(self, data, on = None):
         self.data = data
         self.on = on
@@ -726,6 +731,11 @@ class JoinEncoder(TransformerMixin):
             self.features.extend(self.data.columns.tolist())
         self.fitted_ = True
         return self
+    
+    def __sklearn_tags__(self):
+        # BaseEstimator 쪽 태그를 기반으로 가져오고 수정
+        tags = super().__sklearn_tags__()
+        return tags
     
     def transform(self, X):
         return X.join(
@@ -743,7 +753,7 @@ class JoinEncoder(TransformerMixin):
     def get_feature_names_out(self, X = None):
         return self.features
 
-class ColumnNameCleaner(TransformerMixin):
+class ColumnNameCleaner(TransformerMixin, BaseEstimator):
     def __init__(self):
         pass
     
@@ -752,6 +762,11 @@ class ColumnNameCleaner(TransformerMixin):
         self.fitted_ = True
         return self
 
+    def __sklearn_tags__(self):
+        # BaseEstimator 쪽 태그를 기반으로 가져오고 수정
+        tags = super().__sklearn_tags__()
+        return tags
+        
     def transform(self, X):
         if type(X)  == pd.DataFrame:
             return X.rename(columns = lambda x: x.strip().replace(' ', '_').replace('\t', '_'))
