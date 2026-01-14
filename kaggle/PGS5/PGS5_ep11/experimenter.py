@@ -1,504 +1,7 @@
-import polars as pl
-import pandas as pd
-import numpy as np
 import pickle as pkl
-import adapter
-from data_wrapper import DataWrapper, wrap, unwrap
+from data_wrapper import wrap, unwrap
 from sklearn.model_selection import ShuffleSplit
-
-def resolve_columns(data, X, y=None, org_X = None):
-    """X와 y를 실제 컬럼 리스트로 변환"""
-    columns = data.get_columns()
-
-    # y 처리 (y가 있으면 X에서 제외할 컬럼)
-    y_cols = []
-    if y is not None:
-        if isinstance(y, slice):
-            y_cols = columns[y]
-        elif isinstance(y, list):
-            y_cols = y
-        else:
-            y_cols = [y]
-
-    # X 처리
-    if X is None:
-        # y가 있으면 y를 제외한 모든 컬럼
-        if y is not None:
-            return [col for col in columns if col not in y_cols]
-        else:
-            return columns
-    elif callable(X):
-        # 함수면 columns를 전달하고 Boolean array를 받아서 True인 컬럼만 선택
-        if org_X is None:
-            mask = X(columns)
-        else:
-            mask = X(columns, org_X=org_X)
-        return [col for col, keep in zip(columns, mask) if keep]
-    elif isinstance(X, slice):
-        # slice 객체면 컬럼을 슬라이싱
-        return columns[X]
-    elif isinstance(X, list):
-        # 리스트면 그대로 반환
-        return X
-    else:
-        # 단일 값이면 리스트로 변환
-        return [X]
-
-class TransformProcessor():
-    def __init__(self, node, transformer, X = None, y = None, adapter = None, **args):
-        self.node = node
-        self.transformer = transformer
-        self.params = args
-        self.X = X
-        self.y = y
-        self.adapter = adapter
-        self.output_vars = None
-    
-    def fit(self, train, valid):
-        self.X_ = resolve_columns(train, self.X, self.y)
-        self.obj = self.transformer(**self.params)
-        fit_params = {}
-
-        # DataWrapper에서 컬럼 선택
-        train_X = unwrap(train.select_columns(self.X_))
-
-        if self.y is None:
-            if self.adapter is not None:
-                valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
-                if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X)
-                else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, X_eval = valid_X)
-            self.obj.fit(train_X, **fit_params)
-        else:
-            train_y = unwrap(train.select_columns(self.y))
-            if self.adapter is not None:
-                valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
-                valid_y = unwrap(valid.select_columns(self.y)) if valid is not None else None
-                if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y)
-                else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, X_eval = valid_X, y_eval = valid_y)
-            self.obj.fit(train_X, train_y, **fit_params)
-        # 컬럼명 결정 (get_feature_names_out이 있으면 사용)
-        if hasattr(self.obj, 'get_feature_names_out'):
-            column_names = self.obj.get_feature_names_out().tolist()
-            column_names = [f"{self.node.name}__{col}" for col in column_names]
-        else:
-            column_names = None
-
-        if column_names is not None:
-            self.output_vars = column_names
-        return self
-
-    def fit_process(self, train, valid):
-        self.X_ = resolve_columns(train, self.X, self.y)
-        self.obj = self.transformer(**self.params)
-        fit_params = {}
-
-        # DataWrapper에서 native로 변환
-        train_X = unwrap(train.select_columns(self.X_))
-        train_index = train.get_index()
-
-        if self.y is None:
-            if self.adapter is not None:
-                valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
-                if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X)
-                else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, X_eval = valid_X)
-            result = self.obj.fit_transform(train_X, **fit_params)
-        else:
-            train_y = unwrap(train.select_columns(self.y))
-            if self.adapter is not None:
-                valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
-                valid_y = unwrap(valid.select_columns(self.y)) if valid is not None else None
-                if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y)
-                else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, X_eval = valid_X, y_eval = valid_y)
-            result = self.obj.fit_transform(train_X, train_y, **fit_params)
-
-        # train의 Wrapper 타입으로 변환
-        train_wrapper_class = type(train)
-        return train_wrapper_class.from_output(result, self.output_vars, train_index)
-    
-    def process(self, data):
-        # DataWrapper에서 native로 변환
-        data_X = unwrap(data.select_columns(self.X_))
-        data_index = data.get_index()
-
-        if self.y is None:
-            result = self.obj.transform(data_X)
-        else:
-            data_y = unwrap(data.select_columns(self.y))
-            result = self.obj.transform(data_X, data_y)
-
-        # data의 Wrapper 타입으로 변환
-        data_wrapper_class = type(data)
-        return data_wrapper_class.from_output(result, self.output_vars, data_index)
-
-class PredictProcessor():
-    def __init__(self, node, estimator, X=None, y=None, method='predict', adapter = None, **args):
-        self.node = node
-        self.estimator = estimator
-        self.params = args
-        self.X = X
-        self.y = y
-        self.method = method
-        self.output_vars = None
-        self.adapter = adapter
-    
-    def fit(self, train, valid):
-        self.X_ = resolve_columns(train, self.X, self.y)
-        self.obj = self.estimator(**self.params)
-        fit_params = {}
-
-        # DataWrapper에서 컬럼 선택
-        train_X = unwrap(train.select_columns(self.X_))
-
-        if self.y is None:
-            if self.adapter is not None:
-                valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
-                if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X)
-                else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, X_eval = valid_X)
-            # 비지도학습 with specific columns
-            self.obj.fit(train_X, **fit_params)
-        else:
-            train_y = unwrap(train.select_columns(self.y))
-            if self.adapter is not None:
-                valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
-                valid_y = unwrap(valid.select_columns(self.y)) if valid is not None else None
-                if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y)
-                else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, X_eval = valid_X, y_eval = valid_y)
-            # 지도학습
-            self.obj.fit(train_X, train_y, **fit_params)
-
-        if self.method == 'predict':
-            # y 변수명 결정
-            if self.y is None:
-                y_name = 'prediction'
-            elif isinstance(self.y, list):
-                y_name = '_'.join(self.y)
-            else:
-                y_name = self.y
-
-            col_name = f"{self.node.name}__{y_name}"
-            self.output_vars = [col_name]
-        elif self.method == 'predict_proba':
-            # y 변수명 결정
-            if self.y is None:
-                y_name = 'prediction'
-            elif isinstance(self.y, list):
-                y_name = '_'.join(self.y)
-            else:
-                y_name = self.y
-
-            columns = [f"{self.node.name}__{y_name}_{i}" for i in self.obj.classes_]
-            self.output_vars = columns
-        return self
-
-    def fit_process(self, train, valid):
-        self.X_ = resolve_columns(train, self.X, self.y)
-        self.obj = self.estimator(**self.params)
-        fit_params = {}
-
-        # DataWrapper에서 native로 변환
-        train_X = unwrap(train.select_columns(self.X_))
-        train_index = train.get_index()
-
-        if self.y is None:
-            if self.adapter is not None:
-                valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
-                if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X)
-                else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, X_eval = valid_X)
-            # 비지도학습 with specific columns
-            predictions = self.obj.fit_predict(train_X, **fit_params)
-        else:
-            # 지도학습
-            train_y = unwrap(train.select_columns(self.y))
-            if self.adapter is not None:
-                valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
-                valid_y = unwrap(valid.select_columns(self.y)) if valid is not None else None
-                if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y)
-                else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, X_eval = valid_X, y_eval = valid_y)
-            predictions = self.obj.fit_predict(train_X, train_y, **fit_params)
-
-        # 컬럼명 결정
-        if self.y is None:
-            y_name = 'prediction'
-        elif isinstance(self.y, list):
-            y_name = '_'.join(self.y)
-        else:
-            y_name = self.y
-
-        col_name = f"{self.node.name}__{y_name}"
-        column_names = [col_name]
-        self.output_vars = column_names
-
-        # train의 Wrapper 타입으로 변환
-        train_wrapper_class = type(train)
-        return train_wrapper_class.from_output(predictions, column_names, train_index)
-    
-    def process(self, data):
-        # DataWrapper에서 native로 변환
-        data_X = unwrap(data.select_columns(self.X_))
-        data_index = data.get_index()
-
-        if self.method == 'predict':
-            predictions = self.obj.predict(data_X)
-            # 컬럼명은 fit에서 이미 결정됨
-            column_names = self.output_vars
-
-        elif self.method == 'predict_proba':
-            if not hasattr(self.obj, 'predict_proba'):
-                raise Exception(f"Model {self.estimator.__name__} does not support predict_proba")
-
-            predictions = self.obj.predict_proba(data_X)
-            # 컬럼명은 fit에서 이미 결정됨
-            column_names = self.output_vars
-
-        else:
-            raise ValueError(f"Unknown method: {self.method}. Use 'predict' or 'predict_proba'")
-
-        # data의 Wrapper 타입으로 변환
-        data_wrapper_class = type(data)
-        return data_wrapper_class.from_output(predictions, column_names, data_index)
-
-class NodeGroup():
-    def __init__(self, experimenter, name, processor = None, edges = list(), X = None, y = None, method = 'transform', parent_grp = None, adapter = 'default', params = None):
-        self.experimenter = experimenter
-        self.name = name
-        self.processor = processor
-        self.edges = edges if isinstance(edges, list) else [edges]
-        self.X = X
-        self.y = y
-        self.method = method
-        self.params = params if params is not None else {}
-        self.nodes = []
-        self.parent_grp = parent_grp
-        self.child_grps = []
-        self.adapter = adapter
-
-    def get_attrs(self):
-        attrs = {}
-        parent_attrs = self.parent_grp.get_attrs() if self.parent_grp is not None else {}
-        parent_edges = parent_attrs.get('edges', list())
-        if parent_edges is None:
-            parent_edges = list()
-        attrs['edges'] = parent_edges + self.edges
-        # 다른 속성들은 None이 아니면 현재 값, None이면 부모로 올라가면서 찾기
-        for attr_name in ['processor', 'X', 'y', 'method']:
-            current_value = getattr(self, attr_name, None)
-            if current_value is not None:
-                attrs[attr_name] = current_value
-            elif self.parent_grp is not None:
-                attrs[attr_name] = parent_attrs.get(attr_name, None)
-            else:
-                attrs[attr_name] = None
-
-        # params는 부모의 params를 가져와서 현재 params로 override
-        if self.parent_grp is not None:
-            parent_params = parent_attrs.get('params', {})
-            attrs['params'] = {**parent_params, **self.params}
-        else:
-            attrs['params'] = self.params
-
-        return attrs
-
-class Node():
-    def __init__(
-        self, experimenter, name, processor, edges, X = None, y = None, method = 'transform',
-        use_cache = True, grp_name = None, org_attr = None, adapter = 'default', params = None
-    ):
-        self.experimenter = experimenter
-        self.name = name
-        self.grp_name = grp_name  # 속한 그룹 이름
-        self.org_attr = org_attr  # 원본 속성 (processor, edges, X, y, method, params)
-        self.processor = processor
-        self.method = method
-        self.edges = edges
-        self.params = params if params is not None else {}
-        self.X = X
-        self.y = y
-        self.use_cache = use_cache
-        self.adapter = adapter
-        self.build()
-
-    def build(self):
-        if self.method in ['transform', 'predict', 'predict_proba']:
-            self._fit()
-        elif self.method in ['fit_transform', 'fit_predict']:
-            self._fit_process()
-        else:
-            raise ValueError(f"Unknown processor_type: {self.method}")
-
-    def _fit(self):
-        self.cache_idx = -1
-        self.cache = None
-        self.objs_ = list()
-
-        # adapter 인스턴스 가져오기
-        if self.adapter == 'default':
-            adapter_ = adapter.get_adapter(self.processor)
-        else:
-            adapter_ = self.adapter
-
-        # 전체 검증 수 계산
-        total_folds = sum(len(self.experimenter.train_idx_list[i]) for i in range(len(self.experimenter.train_idx_list)))
-        current = 0
-
-        for train in self.experimenter.split(self.edges):
-            sub = list()
-            for (train_t, train_v), _ in train:
-                # 진행상황 출력
-                current += 1
-                percentage = int(current * 100 / total_folds)
-                print(f"\r[{self.name}] Building: {current}/{total_folds} ({percentage}%)", end='', flush=True)
-                if self.method in ['transform', 'fit_transform']:
-                    obj = TransformProcessor(self, self.processor, X = self.X, y = self.y, adapter = adapter_, **self.params)
-                else:
-                    obj = PredictProcessor(self, self.processor, X = self.X, y = self.y, method = self.method, adapter = adapter_, **self.params)
-
-                # 수행시간 측정
-                import time
-                start_time = time.time()
-                obj.fit(train_t, train_v)
-                elapsed_time = time.time() - start_time
-
-                # 수행 정보 저장
-                info = {
-                    'fit_time': elapsed_time,
-                    'train_shape': train_t.get_shape() if train_t is not None else None,
-                    'train_v_shape': train_v.get_shape() if train_v is not None else None
-                }
-                sub.append((obj, None, info))
-            self.objs_.append(sub)
-
-        # 완료 메시지 출력
-        print(f"\r[{self.name}] Building: {total_folds}/{total_folds} (100%) ✓ Complete")
-
-    def _fit_process(self):
-        self.cache_idx = -1
-        self.cache = None
-        self.objs_ = list()
-
-        # adapter 인스턴스 가져오기
-        if self.adapter == 'default':
-            adapter_ = adapter.get_adapter(self.processor)
-        else:
-            adapter_ = self.adapter
-
-        # 전체 검증 수 계산
-        total_folds = sum(len(self.experimenter.train_idx_list[i]) for i in range(len(self.experimenter.train_idx_list)))
-        current = 0
-
-        for train in self.experimenter.split(self.edges):
-            sub = list()
-            for (train_t, train_v), _ in train:
-                if self.method in ['transform', 'fit_transform']:
-                    obj = TransformProcessor(self, self.processor, X = self.X, y = self.y, adapter = adapter_, **self.params)
-                else:
-                    obj = PredictProcessor(self, self.processor, X = self.X, y = self.y, method = self.method, adapter = adapter_, **self.params)
-
-                # 수행시간 측정
-                import time
-                start_time = time.time()
-                result = obj.fit_process(train_t, train_v)
-                elapsed_time = time.time() - start_time
-
-                info = {
-                    'fit_time': elapsed_time,
-                    'train_shape': train_t.get_shape() if train_t is not None else None,
-                    'train_v_shape': train_v.get_shape() if train_v is not None else None
-                }
-                sub.append((obj, result, info))
-
-                # 진행상황 출력
-                current += 1
-                percentage = int(current * 100 / total_folds)
-                print(f"\r[{self.name}] Building: {current}/{total_folds} ({percentage}%)", end='', flush=True)
-            self.objs_.append(sub)
-
-        # 완료 메시지 출력
-        print(f"\r[{self.name}] Building: {total_folds}/{total_folds} (100%) ✓ Complete")
-
-    def get_data(self, idx, v = None):
-        if self.cache_idx == idx and self.cache is not None:
-            def ret_func():
-                for i in self.cache:
-                    yield i
-            return ret_func()
-        it = self.experimenter.get_data(idx, self.edges)
-        sub = self.objs_[idx]
-        def ret_func():
-            if self.use_cache:
-                self.cache = list()
-            else:
-                self.cache = None
-            for ((train_t, train_v), valid), (obj, train_, info) in zip(it, sub):
-                # train data 처리
-                if train_ is None:
-                    train_result = obj.process(train_t)
-                else:
-                    train_result = train_
-
-                # train_v data 처리
-                if train_v is not None:
-                    train_v_result = obj.process(train_v)
-                else:
-                    train_v_result = None
-
-                # valid data 처리 (외부 fold의 valid)
-                valid_result = obj.process(valid)
-
-                # 필요하면 컬럼 필터링
-                if v is not None:
-                    X = resolve_columns(train_result, v, org_X = obj.X_)
-                    train_result = train_result.select_columns(X)
-                    if train_v_result is not None:
-                        train_v_result = train_v_result.select_columns(X)
-                    valid_result = valid_result.select_columns(X)
-
-                yld = (train_result, train_v_result), valid_result
-                if self.cache is not None:
-                    self.cache.append(yld)
-                yield yld
-        if self.use_cache:
-            self.cache_idx = idx
-        return ret_func()
-
-class RootNode():
-    def __init__(self, experimenter, data):
-        self.experimenter = experimenter
-        self.data = data
-
-    def get_data(self, idx, v = None):
-        outer_valid_data = self.data.iloc(self.experimenter.valid_idx_list[idx])
-
-        def ret_func():
-            for train_v_idx, valid_v_idx in self.experimenter.train_idx_list[idx]:
-                if v is None:
-                    train_data = self.data.iloc(train_v_idx)
-                    train_v_data = self.data.iloc(valid_v_idx) if valid_v_idx is not None else None
-                else:
-                    train_data = self.data.iloc(train_v_idx).select_columns(v)
-                    if valid_v_idx is not None:
-                        train_v_data = self.data.iloc(valid_v_idx).select_columns(v)
-                    else:
-                        train_v_data = None
-
-                yield (train_data, train_v_data), outer_valid_data
-
-        return ret_func()
+from node import NodeGroup, Node, RootNode
 
 class Experimenter():
     def __init__(self, data, data_names = None, sp = ShuffleSplit(n_splits = 1, random_state=1), sp_v = None, **args):
@@ -770,6 +273,41 @@ class Experimenter():
 
         print(f"✅ Group '{name}' removed")
 
+    def remove_node(self, name):
+        """노드를 제거
+
+        Args:
+            name: 제거할 노드 이름
+
+        Raises:
+            ValueError: 노드가 존재하지 않거나, 자식 노드가 있는 경우
+        """
+        # 노드가 존재하는지 확인
+        if name not in self.nodes:
+            raise ValueError(f"Node '{name}' not found")
+
+        # Root 노드는 제거 불가
+        if name is None:
+            raise ValueError("Cannot remove Root node")
+
+        # 자식 노드(descendants)가 있는지 확인
+        descendants = self._find_descendants(name)
+        if descendants:
+            descendants_list = sorted(descendants)
+            raise ValueError(f"Cannot remove node '{name}': has {len(descendants)} dependent node(s): {descendants_list}")
+
+        # 그룹에 속해있으면 그룹의 nodes 리스트에서 제거
+        node = self.nodes[name]
+        if node.grp_name is not None and node.grp_name in self.grps:
+            grp = self.grps[node.grp_name]
+            if name in grp.nodes:
+                grp.nodes.remove(name)
+                print(f"  ├─ Removed '{name}' from group '{node.grp_name}'")
+
+        # nodes 딕셔너리에서 제거
+        del self.nodes[name]
+
+        print(f"✅ Node '{name}' removed")
 
     def set_node(
         self, name, grp = None, processor = None, edges = list(), X = None, y = None, 
@@ -1290,3 +828,152 @@ class Experimenter():
         lines.append(f"**Path from Root to '{node_name}' ({len(paths)} path(s) found)**")
 
         return "\n".join(lines)
+
+    def save(self, filepath):
+        """Experimenter 객체를 파일로 저장
+
+        Args:
+            filepath: 저장할 파일 경로
+        """
+        # 모든 노드의 캐시를 언로드
+        print("🗑️  Unloading all node caches before saving...")
+        cache_count = 0
+        for name, node in self.nodes.items():
+            if name is not None and hasattr(node, '_unload_cache'):
+                node._unload_cache()
+                cache_count += 1
+        print(f"   Unloaded cache from {cache_count} node(s)")
+
+        # Experimenter 객체를 pickle로 저장
+        print(f"💾 Saving Experimenter to {filepath}...")
+        with open(filepath, 'wb') as f:
+            pkl.dump(self, f)
+
+        print(f"✅ Experimenter saved successfully")
+
+    @staticmethod
+    def load(filepath):
+        """파일에서 Experimenter 객체를 불러옴
+
+        Args:
+            filepath: 불러올 파일 경로
+
+        Returns:
+            Experimenter: 불러온 Experimenter 객체
+        """
+        print(f"📂 Loading Experimenter from {filepath}...")
+        with open(filepath, 'rb') as f:
+            exp = pkl.load(f)
+
+        print(f"✅ Experimenter loaded successfully")
+        print(f"   - {len(exp.nodes) - 1} node(s)")
+        print(f"   - {len(exp.grps)} group(s)")
+        print(f"   - {len(exp.train_idx_list)} fold(s)")
+
+        return exp
+
+def create_like(exp, data, data_names=None, sp=None, sp_v=None, **args):
+    """기존 Experimenter의 구조를 복제하여 새로운 Experimenter 생성
+
+    Args:
+        exp: 구조를 복제할 원본 Experimenter
+        data: 새로운 데이터
+        data_names: 새로운 데이터의 컬럼명 (None이면 자동)
+        sp: 외부 fold splitter (None이면 원본과 동일)
+        sp_v: 내부 fold splitter (None이면 원본과 동일)
+        **args: split에 사용할 추가 인자
+
+    Returns:
+        Experimenter: 새로 생성된 Experimenter 인스턴스
+    """
+    print("🔄 Creating new Experimenter with same structure...")
+
+    # sp와 sp_v가 None이면 원본과 동일한 설정 사용
+    if sp is None:
+        # 원본의 split 설정을 추정 (fold 수만 맞춤)
+        n_splits = len(exp.train_idx_list)
+        sp = ShuffleSplit(n_splits=n_splits, random_state=1)
+
+    # 새 Experimenter 생성
+    new_exp = Experimenter(data, data_names=data_names, sp=sp, sp_v=sp_v, **args)
+    print(f"   ├─ Created base Experimenter with {len(new_exp.train_idx_list)} fold(s)")
+
+    # 그룹 복제 (부모-자식 관계를 유지하기 위해 위상 정렬)
+    # 1. 최상위 그룹부터 BFS로 복제
+    grp_mapping = {}  # 원본 그룹명 -> 새 그룹 객체
+
+    # 최상위 그룹 찾기 (parent_grp가 None인 그룹)
+    top_level_grps = [grp for grp in exp.grps.values() if grp.parent_grp is None]
+
+    def clone_group_recursive(orig_grp, parent_grp_name=None):
+        """그룹을 재귀적으로 복제"""
+        new_grp = new_exp.add_grp(
+            name=orig_grp.name,
+            processor=orig_grp.processor,
+            edges=orig_grp.edges[:],  # 리스트 복사
+            X=orig_grp.X,
+            y=orig_grp.y,
+            method=orig_grp.method,
+            parent_grp=parent_grp_name,
+            adapter=orig_grp.adapter,
+            params=orig_grp.params.copy()
+        )
+        grp_mapping[orig_grp.name] = new_grp
+
+        # 자식 그룹들도 복제
+        for child_grp in orig_grp.child_grps:
+            clone_group_recursive(child_grp, parent_grp_name=orig_grp.name)
+
+    # 최상위 그룹부터 재귀적으로 복제
+    for grp in top_level_grps:
+        clone_group_recursive(grp)
+
+    print(f"   ├─ Cloned {len(exp.grps)} group(s)")
+
+    # 노드 복제 (위상 정렬: Root부터 BFS)
+    # 1. 노드의 우선순위 계산 (BFS)
+    node_priorities = {}
+    queue = [('Root', 1)]
+
+    while queue:
+        current_node, priority = queue.pop(0)
+
+        if current_node in node_priorities:
+            continue
+
+        node_priorities[current_node] = priority
+
+        # current_node를 edge로 가지는 child 노드들 찾기
+        for name, node in exp.nodes.items():
+            if name is not None and name not in node_priorities:
+                for edge_name, _ in node.edges:
+                    if (current_node == 'Root' and edge_name is None) or (edge_name == current_node):
+                        queue.append((name, priority + 1))
+                        break
+
+    # 우선순위 순으로 노드 정렬
+    sorted_nodes = sorted(
+        [(name, node) for name, node in exp.nodes.items() if name is not None],
+        key=lambda x: node_priorities.get(x[0], float('inf'))
+    )
+
+    # 노드 복제
+    for name, orig_node in sorted_nodes:
+        if orig_node.org_attr is not None:
+            org = orig_node.org_attr
+            new_exp.set_node(
+                name,
+                grp=orig_node.grp_name,
+                processor=org['processor'],
+                edges=org['edges'][:] if isinstance(org['edges'], list) else org['edges'],
+                X=org['X'],
+                y=org['y'],
+                method=org['method'],
+                adapter=org['adapter'],
+                params=org['params'].copy()
+            )
+
+    print(f"   └─ Cloned {len(sorted_nodes)} node(s)")
+    print("✅ Structure cloning complete!")
+
+    return new_exp

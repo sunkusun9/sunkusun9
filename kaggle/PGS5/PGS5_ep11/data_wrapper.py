@@ -244,9 +244,7 @@ class PolarsWrapper(DataWrapper):
         return PolarsWrapper(result)
 
     def select_columns(self, columns):
-        if isinstance(columns, str):
-            columns = [columns]
-        return PolarsWrapper(self.data.select(columns))
+        return PolarsWrapper(self.data[columns])
 
     def get_columns(self):
         return self.data.columns
