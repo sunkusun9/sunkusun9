@@ -1,6 +1,7 @@
 import uuid
-import adapter
-from processor import TransformProcessor, PredictProcessor, resolve_columns
+from ._adapter import get_adapter
+from ._node_processor import TransformProcessor, PredictProcessor, resolve_columns
+import numpy as np
 
 class NodeGroup():
     def __init__(self, experimenter, name, processor = None, edges = list(), X = None, y = None, method = 'transform', parent_grp = None, adapter = 'default', params = None):
@@ -65,6 +66,13 @@ class Node():
     def _unload_cache(self):
         self.cache_idx = -1
         self.cache = None
+        self.cache_v_param = None
+        self.cache_idx_v = -1
+        self.cache_v = None
+        self.cache_v_param_v = None
+        self.cache_idx_t = -1
+        self.cache_t = None
+        self.cache_t_param_v = None
 
 
     def build(self):
@@ -76,13 +84,12 @@ class Node():
             raise ValueError(f"Unknown processor_type: {self.method}")
 
     def _fit(self):
-        self.cache_idx = -1
-        self.cache = None
+        self._unload_cache()
         self.objs_ = list()
 
         # adapter 인스턴스 가져오기
         if self.adapter == 'default':
-            adapter_ = adapter.get_adapter(self.processor)
+            adapter_ = get_adapter(self.processor)
         else:
             adapter_ = self.adapter
 
@@ -122,8 +129,7 @@ class Node():
         print(f"\r[{self.name}] Building: {total_folds}/{total_folds} (100%) ✓ Complete")
 
     def _fit_process(self):
-        self.cache_idx = -1
-        self.cache = None
+        self._unload_cache()
         self.objs_ = list()
 
         # adapter 인스턴스 가져오기
@@ -168,13 +174,15 @@ class Node():
         print(f"\r[{self.name}] Building: {total_folds}/{total_folds} (100%) ✓ Complete")
 
     def get_data(self, idx, v = None):
-        if self.cache_idx == idx and self.cache is not None:
+        if self.cache_idx == idx and self.cache_v_param == v and self.cache is not None:
             def ret_func():
                 for i in self.cache:
                     yield i
             return ret_func()
         it = self.experimenter.get_data(idx, self.edges)
         sub = self.objs_[idx]
+        if self.use_cache:
+            self._unload_cache()
         def ret_func():
             if self.use_cache:
                 self.cache = list()
@@ -210,16 +218,98 @@ class Node():
                 yield yld
         if self.use_cache:
             self.cache_idx = idx
+            self.cache_v_param = v
         return ret_func()
 
+    def get_data_train(self, idx, v=None):
+        if self.cache_idx_t == idx and self.cache_t_param_v == v and self.cache_t is not None:
+            def ret_func():
+                for i in self.cache_t:
+                    yield i
+            return ret_func()
+        it = self.experimenter.get_data_train(idx, self.edges)
+        sub = self.objs_[idx]
+        if self.use_cache:
+            self._unload_cache()
+        def ret_func():
+            if self.use_cache:
+                self.cache_t = list()
+            else:
+                self.cache_t = None
+            for (train, train_v), (obj, train_, info) in zip(it, sub):
+                train_result = obj.process(train) if train_ is None else train_
+                if train_v is not None:
+                    train_v_result = obj.process(train_v)
+                else:
+                    train_v_result = None
+                # 필요하면 컬럼 필터링
+                if v is not None:
+                    X = resolve_columns(train_result, v, org_X=obj.X_)
+                    train_result = train_result.select_columns(X)
+                    if train_v_result is not None:
+                        train_v_result = train_v_result.select_columns(X)
+                if self.cache_t is not None:
+                    self.cache_t.append((train_result, train_v_result))
+                yield train_result, train_v_result
+        if self.use_cache:
+            self.cache_idx_t = idx
+            self.cache_t_param_v = v
+        return ret_func()
+    
+    def get_data_valid(self, idx, v=None):
+        """외부 검증 데이터에 대한 처리 결과 iterator
+
+        Args:
+            idx: outer fold 인덱스
+            v: 선택할 컬럼 (None이면 전체)
+
+        Yields:
+            valid_result: 각 inner fold 모델로 처리된 외부 검증 데이터 결과
+        """
+        if self.cache_idx_v == idx and self.cache_v_param_v == v and self.cache_v is not None:
+            def ret_func():
+                for i in self.cache_v:
+                    yield i
+            return ret_func()
+
+        it = self.experimenter.get_data_valid(idx, self.edges)
+        sub = self.objs_[idx]
+        if self.use_cache:
+            self._unload_cache()
+        def ret_func():
+            if self.use_cache:
+                self.cache_v = list()
+            else:
+                self.cache_v = None
+
+            for valid, (obj, train_, info) in zip(it, sub):
+                # valid data 처리 (외부 fold의 valid)
+                valid_result = obj.process(valid)
+
+                # 필요하면 컬럼 필터링
+                if v is not None:
+                    X = resolve_columns(valid_result, v, org_X=obj.X_)
+                    valid_result = valid_result.select_columns(X)
+
+                if self.cache_v is not None:
+                    self.cache_v.append(valid_result)
+                yield valid_result
+
+        if self.use_cache:
+            self.cache_idx_v = idx
+            self.cache_v_param_v = v
+        return ret_func()
+    
+    
 class RootNode():
     def __init__(self, experimenter, data):
         self.experimenter = experimenter
         self.data = data
 
-    def get_data(self, idx, v = None):
+    def get_data(self, idx, v=None):
         outer_valid_data = self.data.iloc(self.experimenter.valid_idx_list[idx])
-
+        if v is not None:
+            outer_valid_data = outer_valid_data.select_columns(v)
         def ret_func():
             for train_v_idx, valid_v_idx in self.experimenter.train_idx_list[idx]:
                 if v is None:
@@ -233,5 +323,42 @@ class RootNode():
                         train_v_data = None
 
                 yield (train_data, train_v_data), outer_valid_data
+
+        return ret_func()
+
+    def get_data_train(self, idx, v=None):
+        def ret_func():
+            for train_v_idx, valid_v_idx in self.experimenter.train_idx_list[idx]:
+                if v is None:
+                    train_data = self.data.iloc(train_v_idx)
+                    train_v_data = self.data.iloc(valid_v_idx) if valid_v_idx is not None else None
+                else:
+                    train_data = self.data.iloc(train_v_idx).select_columns(v)
+                    if valid_v_idx is not None:
+                        train_v_data = self.data.iloc(valid_v_idx).select_columns(v)
+                    else:
+                        train_v_data = None
+
+                yield train_data, train_v_data
+
+        return ret_func()
+    
+    def get_data_valid(self, idx, v=None):
+        """외부 검증 데이터만 반환하는 iterator
+
+        Args:
+            idx: outer fold 인덱스
+            v: 선택할 컬럼 (None이면 전체)
+
+        Yields:
+            outer_valid_data: 외부 검증 데이터 (각 inner fold마다 동일한 데이터)
+        """
+        outer_valid_data = self.data.iloc(self.experimenter.valid_idx_list[idx])
+        if v is not None:
+            outer_valid_data = outer_valid_data.select_columns(v)
+
+        def ret_func():
+            for _ in self.experimenter.train_idx_list[idx]:
+                yield outer_valid_data
 
         return ret_func()

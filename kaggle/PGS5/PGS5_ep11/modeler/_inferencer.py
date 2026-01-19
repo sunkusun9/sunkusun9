@@ -1,6 +1,6 @@
 import pickle as pkl
-from data_wrapper import wrap, unwrap
-from processor import resolve_columns
+from _data_wrapper import wrap, unwrap
+from _node_processor import resolve_columns
 
 class InferenceTransformProcessor():
     """추론 전용 TransformProcessor - fit 없이 transform만 수행"""

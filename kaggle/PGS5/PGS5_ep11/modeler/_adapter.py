@@ -151,7 +151,7 @@ class LightGBMAdapter(ModelAdapter):
                                     last_metrics.append(f"{dataset_name}-{metric_name}: {value:.4f}")
                                 metrics_str = " | " + ", ".join(last_metrics)
 
-                            print(f"\r  Progress: {current}/{n_estimators} ({percentage:.1f}%){metrics_str}", flush=True)
+                            print(f"\r  Progress: {current}/{n_estimators} ({percentage:.1f}%){metrics_str}", end='', flush=True)
 
                     return callback
 

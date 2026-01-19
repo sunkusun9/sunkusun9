@@ -1,4 +1,4 @@
-from data_wrapper import unwrap
+from ._data_wrapper import unwrap
 
 def resolve_columns(data, X, y=None, org_X = None):
     """X와 y를 실제 컬럼 리스트로 변환"""

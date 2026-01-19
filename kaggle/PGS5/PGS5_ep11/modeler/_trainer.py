@@ -1,7 +1,8 @@
 import pickle as pkl
-from data_wrapper import wrap, unwrap
 from sklearn.model_selection import ShuffleSplit
-from node import NodeGroup, Node
+
+from _data_wrapper import wrap, unwrap
+from _node import NodeGroup, Node
 
 class TrainerRootNode():
     """Trainer용 RootNode - outer fold 없이 inner fold만 제공"""
@@ -34,11 +35,16 @@ class Trainer():
     Experimenter의 sp_v에 해당하는 역할을 수행.
     주어진 데이터를 train/valid로 split하여 학습 시 eval_set 제공.
     """
-    def __init__(self, data, data_names=None, sp=ShuffleSplit(n_splits=1, random_state=1), **args):
+    def __init__(self, data, data_names=None, sp=ShuffleSplit(n_splits=1, random_state=1), splitter_params=None):
         self.train_idx_list = list()
         data_native = data
         data = wrap(data)
         self.root = data
+
+        # splitter 설정 저장
+        self.sp = sp
+        self.splitter_params = splitter_params if splitter_params is not None else {}
+
         split_params = {}
 
         if data_names is None:
@@ -46,7 +52,7 @@ class Trainer():
 
         # split 파라미터 준비
         split_params['X'] = data_native
-        for k, v in args.items():
+        for k, v in self.splitter_params.items():
             split_params[k] = unwrap(data.select_columns(v))
 
         # 단일 레벨 split (Experimenter의 sp_v 역할)
@@ -513,7 +519,7 @@ class Trainer():
 
         return trainer
 
-def create_from(exp, data, data_names=None, sp=None, select=None, **args):
+def create_from(exp, data, data_names=None, sp=None, select=None, splitter_params=None):
     """Experimenter의 구조를 복제하여 Trainer 생성
 
     Args:
@@ -522,7 +528,7 @@ def create_from(exp, data, data_names=None, sp=None, select=None, **args):
         data_names: 새로운 데이터의 컬럼명 (None이면 자동)
         sp: splitter (None이면 기본 ShuffleSplit)
         select: 복제할 노드 이름의 리스트 (None이면 모든 노드). 선택된 노드와 그들의 부모 노드들만 복제
-        **args: split에 사용할 추가 인자
+        splitter_params: splitter에 전달할 파라미터 (None이면 원본 Experimenter와 동일)
 
     Returns:
         Trainer: 새로 생성된 Trainer 인스턴스
@@ -533,8 +539,12 @@ def create_from(exp, data, data_names=None, sp=None, select=None, **args):
     if sp is None:
         sp = ShuffleSplit(n_splits=1, random_state=1)
 
+    # splitter_params가 None이면 원본 Experimenter의 설정 사용
+    if splitter_params is None:
+        splitter_params = exp.splitter_params.copy()
+
     # 새 Trainer 생성
-    trainer = Trainer(data, data_names=data_names, sp=sp, **args)
+    trainer = Trainer(data, data_names=data_names, sp=sp, splitter_params=splitter_params)
     print(f"   ├─ Created base Trainer with {len(trainer.train_idx_list)} fold(s)")
 
     # select가 주어진 경우, 선택된 노드들과 그들의 부모 노드들을 찾기

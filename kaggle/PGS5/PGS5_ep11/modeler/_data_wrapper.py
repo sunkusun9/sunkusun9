@@ -7,6 +7,16 @@ Provides a unified interface for common DataFrame operations across different li
 from abc import ABC, abstractmethod
 import numpy as np
 
+try:
+    import pandas as pd
+except Exception:
+    pd = None
+
+try:
+    import polars as pl
+except Exception:
+    pl = None
+
 
 class DataWrapper(ABC):
     """Abstract base class for data wrappers
@@ -149,6 +159,29 @@ class DataWrapper(ABC):
             # For other types, delegate to native object
             return DataWrapper.from_native(self.data[key])
 
+    @staticmethod
+    def simple(iterator):
+        """첫 번째 inner fold 결과만 반환"""
+        return next(iterator)
+
+    @staticmethod
+    def mean(iterator):
+        """평균값으로 집계"""
+        from ._data_wrapper import unwrap, wrap
+        # DataWrapper에서 native 추출
+        ret = unwrap(next(iterator)).copy()
+        cnt = 1
+        for i in iterator:
+            ret += unwrap(i)
+            cnt += 1
+        return wrap(ret / cnt)
+    
+    @staticmethod
+    @abstractmethod
+    def mode(iterator):
+        """최빈값으로 집계"""
+        pass
+
 
 class PandasWrapper(DataWrapper):
     """Wrapper for pandas DataFrame/Series"""
@@ -191,7 +224,6 @@ class PandasWrapper(DataWrapper):
         Returns:
             PandasWrapper 인스턴스
         """
-        import pandas as pd
 
         if output is None:
             return None
@@ -228,7 +260,27 @@ class PandasWrapper(DataWrapper):
         # 변환 불가능한 경우 에러 발생
         else:
             raise TypeError(f"Cannot convert {type(output)} to pandas DataFrame")
+    
+    @staticmethod
+    def mode(iterator):
+        data_list = [unwrap(i) for i in iterator]
+        if len(data_list) == 0:
+            return None
+        if len(data_list) == 1:
+            return data_list[0]
 
+        # DataFrame인 경우
+        if isinstance(data_list[0], pd.DataFrame):
+            result = list()
+            for i in data_list[0].columns:
+                result.append(
+                    pd.concat([j[i] for j in data_list], axis = 1).mode(axis=1)[0].rename(i)
+                )
+            return wrap(pd.concat(result, axis=1))
+
+        # Series인 경우
+        elif isinstance(data_list[0], pd.Series):
+            return wrap(pd.concat(data_list).mode(axis = 1)[0])
 
 class PolarsWrapper(DataWrapper):
     """Wrapper for Polars DataFrame"""
@@ -314,6 +366,44 @@ class PolarsWrapper(DataWrapper):
         else:
             raise TypeError(f"Cannot convert {type(output)} to polars DataFrame")
 
+    @staticmethod
+    def mean(iterator):
+        """평균값으로 집계"""
+        from ._data_wrapper import unwrap, wrap
+        # DataWrapper에서 native 추출
+        ret = unwrap(next(iterator)).clone()
+        cnt = 1
+        for i in iterator:
+            ret += unwrap(i)
+            cnt += 1
+        return wrap(ret / cnt)
+
+    @staticmethod
+    def mode(iterator):
+        data_list = [unwrap(i) for i in iterator]
+        if len(data_list) == 0:
+            return None
+        if len(data_list) == 1:
+            return wrap(data_list[0])
+
+        # DataFrame인 경우
+        if isinstance(data_list[0], pl.DataFrame):
+            result = list()
+            for col_name in data_list[0].columns:
+                # 각 DataFrame에서 해당 컬럼을 추출하여 수평으로 결합
+                combined = pl.concat([df.select(col_name).rename({col_name: f"col_{idx}"})
+                                     for idx, df in enumerate(data_list)], how="horizontal")
+                # 각 행별로 최빈값 계산 (polars는 행별 mode가 없으므로 pandas 변환 후 계산)
+                mode_values = combined.to_pandas().mode(axis=1)[0].values
+                result.append(pl.Series(col_name, mode_values))
+            return wrap(pl.DataFrame(result))
+
+        # Series인 경우
+        elif isinstance(data_list[0], pl.Series):
+            combined = pl.concat([s.to_frame().rename({s.name: f"col_{idx}"})
+                                 for idx, s in enumerate(data_list)], how="horizontal")
+            mode_values = combined.to_pandas().mode(axis=1)[0].values
+            return wrap(pl.Series(data_list[0].name, mode_values))
 
 class CudfWrapper(DataWrapper):
     """Wrapper for cuDF DataFrame (GPU-accelerated)"""
@@ -393,6 +483,29 @@ class CudfWrapper(DataWrapper):
         else:
             raise TypeError(f"Cannot convert {type(output)} to cudf DataFrame")
 
+    @staticmethod
+    def mode(iterator):
+        import cudf
+        data_list = [unwrap(i) for i in iterator]
+        if len(data_list) == 0:
+            return None
+        if len(data_list) == 1:
+            return wrap(data_list[0])
+
+        # DataFrame인 경우
+        if isinstance(data_list[0], cudf.DataFrame):
+            result = list()
+            for col_name in data_list[0].columns:
+                # cudf는 pandas와 유사한 API를 가지므로 pandas로 변환하여 처리
+                combined = pd.concat([j[col_name].to_pandas() for j in data_list], axis=1)
+                mode_series = combined.mode(axis=1)[0].rename(col_name)
+                result.append(cudf.Series(mode_series))
+            return wrap(cudf.concat(result, axis=1))
+
+        # Series인 경우
+        elif isinstance(data_list[0], cudf.Series):
+            combined = pd.concat([s.to_pandas() for s in data_list], axis=1)
+            return wrap(cudf.Series(combined.mode(axis=1)[0]))
 
 class NumpyWrapper(DataWrapper):
     """Wrapper for NumPy ndarray"""
@@ -504,6 +617,22 @@ class NumpyWrapper(DataWrapper):
         # 변환 불가능한 경우 에러 발생
         else:
             raise TypeError(f"Cannot convert {type(output)} to numpy array")
+        
+    @staticmethod
+    def mode(iterator):
+        from scipy import stats
+        data_list = [unwrap(i) for i in iterator]
+        if len(data_list) == 0:
+            return None
+        if len(data_list) == 1:
+            return wrap(data_list[0])
+
+        # 모든 array를 stack하여 (n_samples, n_arrays) 또는 (n_samples, n_cols, n_arrays) 형태로 만듦
+        stacked = np.stack(data_list, axis=-1)
+
+        # scipy.stats.mode를 사용하여 마지막 축(n_arrays)에서 최빈값 계산
+        mode_result = stats.mode(stacked, axis=-1, keepdims=False)
+        return wrap(mode_result.mode)
 
 
 def wrap(data):

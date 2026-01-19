@@ -1,20 +1,32 @@
+import uuid
 import pickle as pkl
-from data_wrapper import wrap, unwrap
 from sklearn.model_selection import ShuffleSplit
-from node import NodeGroup, Node, RootNode
+
+from ._data_wrapper import wrap, unwrap
+from ._node import NodeGroup, Node, RootNode
 
 class Experimenter():
-    def __init__(self, data, data_names = None, sp = ShuffleSplit(n_splits = 1, random_state=1), sp_v = None, **args):
+    def __init__(self, data, data_names=None, sp=ShuffleSplit(n_splits=1, random_state=1), sp_v=None, splitter_params=None, title=None):
         self.train_idx_list = list()
         self.valid_idx_list = list()
         data_native = data
         data = wrap(data)
         self.root = data
+
+        # 실험 타이틀 저장
+        self.title = title
+
+        # splitter 설정 저장
+        self.sp = sp
+        self.sp_v = sp_v
+        self.splitter_params = splitter_params if splitter_params is not None else {}
+        self.exp_id = str(uuid.uuid4())
+
         split_params = {}
 
         if data_names is None:
             data_names = data.get_columns()
-        for k, v in args.items():
+        for k, v in self.splitter_params.items():
             split_params[k] = unwrap(data.select_columns(v))
 
         for train_idx, valid_idx in sp.split(data_native, **split_params):
@@ -22,14 +34,13 @@ class Experimenter():
                 train_data = data.iloc(train_idx)
                 train_data_native = unwrap(train_data)
 
-                
-                split_params = {'X': train_data_native}
-                for k, v in args.items():
-                    split_params[k] = unwrap(train_data.select_columns(v))
+                inner_split_params = {'X': train_data_native}
+                for k, v in self.splitter_params.items():
+                    inner_split_params[k] = unwrap(train_data.select_columns(v))
 
                 self.train_idx_list.append([
                     (train_idx[train_v_idx], train_idx[valid_v_idx])
-                    for train_v_idx, valid_v_idx in sp_v.split(**split_params)
+                    for train_v_idx, valid_v_idx in sp_v.split(**inner_split_params)
                 ])
             else:
                 self.train_idx_list.append([
@@ -39,6 +50,9 @@ class Experimenter():
         self.nodes = {None: RootNode(self, data)}
         self.grps = {}
 
+    def get_n_splits(self):
+        return len(self.train_idx_list)
+    
     def _find_descendants(self, node_name):
         """특정 노드에 의존하는 모든 하위 노드들을 찾음 (BFS)"""
         descendants = set()
@@ -273,6 +287,23 @@ class Experimenter():
 
         print(f"✅ Group '{name}' removed")
 
+    def get_parents(self, node_name):
+        if node_name not in self.nodes:
+            return []
+
+        node = self.nodes[node_name]
+        if node.grp_name is None:
+            return []
+
+        result = []
+        current_grp = self.grps.get(node.grp_name)
+
+        while current_grp is not None:
+            result.append(current_grp.name)
+            current_grp = current_grp.parent_grp
+
+        return result
+
     def remove_node(self, name):
         """노드를 제거
 
@@ -438,25 +469,82 @@ class Experimenter():
                         valid_sub.append(train_v_data)
                     outer_valid_sub.append(outer_valid_data)
 
-                # DataWrapper의 concat 사용
+                train_concat = type(train_sub[0]).concat(train_sub, axis=1)
+                outer_concat = type(outer_valid_sub[0]).concat(outer_valid_sub, axis=1)
                 if len(valid_sub) > 0:
-                    train_concat = type(train_sub[0]).concat(train_sub, axis=1)
                     valid_concat = type(valid_sub[0]).concat(valid_sub, axis=1)
-                    outer_concat = type(outer_valid_sub[0]).concat(outer_valid_sub, axis=1)
                     yield (train_concat, valid_concat), outer_concat
                 else:
-                    train_concat = type(train_sub[0]).concat(train_sub, axis=1)
-                    outer_concat = type(outer_valid_sub[0]).concat(outer_valid_sub, axis=1)
                     yield (train_concat, None), outer_concat
 
         data_list = list()
         for node_name, var in edges:
             data_list.append(self.nodes[node_name].get_data(idx, var))
         return ret_data_func(data_list)
+
+    def get_data_train(self, idx, edges):
+        def ret_data_func(data_list):
+            for z in zip(*data_list):
+                train_sub, valid_sub = list(), list()
+                for train_data, train_v_data in z:
+                    train_sub.append(train_data)
+                    if train_v_data is not None:
+                        valid_sub.append(train_v_data)
+                train_concat = type(train_sub[0]).concat(train_sub, axis=1)
+                if len(valid_sub) > 0:
+                    valid_concat = type(valid_sub[0]).concat(valid_sub, axis=1)
+                    yield train_concat, valid_concat
+                else:
+                    yield train_concat, None
+
+        data_list = list()
+        for node_name, var in edges:
+            data_list.append(self.nodes[node_name].get_data_train(idx, var))
+        return ret_data_func(data_list)
     
+    def get_data_valid(self, idx, edges):
+        """외부 검증 데이터에 대한 처리 결과를 가져옴
+
+        Args:
+            idx: outer fold 인덱스
+            edges: [(node_name, var), ...] 형태의 edge 리스트
+
+        Yields:
+            valid_concat: 각 inner fold 모델로 처리된 외부 검증 데이터 결과 (concat)
+        """
+        def ret_data_func(data_list):
+            for z in zip(*data_list):
+                outer_valid_sub = list()
+                for outer_valid_data in z:
+                    outer_valid_sub.append(outer_valid_data)
+
+                # DataWrapper의 concat 사용
+                outer_concat = type(outer_valid_sub[0]).concat(outer_valid_sub, axis=1)
+                yield outer_concat
+
+        data_list = list()
+        for node_name, var in edges:
+            data_list.append(self.nodes[node_name].get_data_valid(idx, var))
+        return ret_data_func(data_list)
+
     def split(self, edges):
         for idx in range(len(self.train_idx_list)):
             yield self.get_data(idx, edges)
+    
+    def get_node_output(self, idx, node, var = None):
+        if node not in self.nodes:
+            raise ValueError(f"Node '{node}' not found")
+        return self.nodes[node].get_data(idx, var)
+
+    def get_node_train_output(self, idx, node, var=None):
+        if node not in self.nodes:
+            raise ValueError(f"Node '{node}' not found")
+        return self.nodes[node].get_data_train(idx, var)
+
+    def get_node_valid_output(self, idx, node, var=None):
+        if node not in self.nodes:
+            raise ValueError(f"Node '{node}' not found")
+        return self.nodes[node].get_data_valid(idx, var)
 
     def get_node_info(self):
         """노드들의 정보를 출력"""
@@ -481,8 +569,66 @@ class Experimenter():
                 if descendants:
                     print(f"  └─ Descendants: {sorted(descendants)}")
 
-    def to_mermaid(self, max_depth=None, direction='TD'):
-        """실험 구조를 Mermaid markdown으로 반환
+    def desc_spec(self):
+        """실험 스펙을 Markdown으로 반환"""
+        lines = []
+
+        # 실험 타이틀
+        if self.title:
+            lines.append(f"## {self.title}")
+            lines.append("")
+
+        lines.append("| 항목 | 값 |")
+        lines.append("|------|-----|")
+
+        # Outer Splitter (sp)
+        sp_name = type(self.sp).__name__
+        sp_params = []
+        if hasattr(self.sp, 'n_splits'):
+            sp_params.append(f"n_splits={self.sp.n_splits}")
+        if hasattr(self.sp, 'random_state') and self.sp.random_state is not None:
+            sp_params.append(f"random_state={self.sp.random_state}")
+        if hasattr(self.sp, 'test_size') and self.sp.test_size is not None:
+            sp_params.append(f"test_size={self.sp.test_size}")
+        if hasattr(self.sp, 'shuffle'):
+            sp_params.append(f"shuffle={self.sp.shuffle}")
+        sp_info = f"{sp_name}({', '.join(sp_params)})" if sp_params else sp_name
+        lines.append(f"| **Outer Splitter (sp)** | `{sp_info}` |")
+
+        # Inner Splitter (sp_v)
+        if self.sp_v is not None:
+            sp_v_name = type(self.sp_v).__name__
+            sp_v_params = []
+            if hasattr(self.sp_v, 'n_splits'):
+                sp_v_params.append(f"n_splits={self.sp_v.n_splits}")
+            if hasattr(self.sp_v, 'random_state') and self.sp_v.random_state is not None:
+                sp_v_params.append(f"random_state={self.sp_v.random_state}")
+            if hasattr(self.sp_v, 'test_size') and self.sp_v.test_size is not None:
+                sp_v_params.append(f"test_size={self.sp_v.test_size}")
+            if hasattr(self.sp_v, 'shuffle'):
+                sp_v_params.append(f"shuffle={self.sp_v.shuffle}")
+            sp_v_info = f"{sp_v_name}({', '.join(sp_v_params)})" if sp_v_params else sp_v_name
+            lines.append(f"| **Inner Splitter (sp_v)** | `{sp_v_info}` |")
+        else:
+            lines.append(f"| **Inner Splitter (sp_v)** | None |")
+
+        # Splitter Params
+        if self.splitter_params:
+            params_str = ", ".join([f"{k}='{v}'" for k, v in self.splitter_params.items()])
+            lines.append(f"| **Splitter Params** | `{{{params_str}}}` |")
+        else:
+            lines.append(f"| **Splitter Params** | `{{}}` |")
+
+        # Fold 수
+        lines.append(f"| **Outer Folds** | {len(self.train_idx_list)} |")
+        if len(self.train_idx_list) > 0:
+            inner_folds = len(self.train_idx_list[0])
+            lines.append(f"| **Inner Folds** | {inner_folds} |")
+
+        return "\n".join(lines)
+
+    def desc_pipeline(self, max_depth=None, direction='TD'):
+        """파이프라인 구조를 Mermaid Markdown으로 반환
 
         Args:
             max_depth: 최대 표시 깊이 (None이면 무제한)
@@ -700,18 +846,11 @@ class Experimenter():
             lines.append(f"    {source} --> {target}")
 
         lines.append("```")
-        lines.append("")
-
-        # Splitter 정보
-        splitter_info = f"Experimenter (n_splits={len(self.train_idx_list)})"
-        if max_depth is not None:
-            splitter_info += f", max_depth={max_depth}"
-        lines.append(f"**{splitter_info}**")
 
         return "\n".join(lines)
 
-    def node_to_mermaid(self, node_name, direction='TD', show_params=False):
-        """특정 노드까지의 연결 구조를 Mermaid markdown으로 반환
+    def desc_node(self, node_name, direction='TD', show_params=False):
+        """특정 노드까지의 연결 구조를 Mermaid Markdown으로 반환
 
         Args:
             node_name: 대상 노드 이름
@@ -872,30 +1011,36 @@ class Experimenter():
 
         return exp
 
-def create_like(exp, data, data_names=None, sp=None, sp_v=None, **args):
+def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=None, title=None):
     """기존 Experimenter의 구조를 복제하여 새로운 Experimenter 생성
 
     Args:
         exp: 구조를 복제할 원본 Experimenter
         data: 새로운 데이터
         data_names: 새로운 데이터의 컬럼명 (None이면 자동)
-        sp: 외부 fold splitter (None이면 원본과 동일)
-        sp_v: 내부 fold splitter (None이면 원본과 동일)
-        **args: split에 사용할 추가 인자
+        sp: 외부 splitter (None이면 원본과 동일)
+        sp_v: 내부 splitter (None이면 원본과 동일)
+        splitter_params: splitter에 전달할 파라미터 (None이면 원본과 동일)
+        title: 실험 타이틀 (None이면 원본과 동일)
 
     Returns:
         Experimenter: 새로 생성된 Experimenter 인스턴스
     """
     print("🔄 Creating new Experimenter with same structure...")
 
-    # sp와 sp_v가 None이면 원본과 동일한 설정 사용
     if sp is None:
-        # 원본의 split 설정을 추정 (fold 수만 맞춤)
-        n_splits = len(exp.train_idx_list)
-        sp = ShuffleSplit(n_splits=n_splits, random_state=1)
+        sp = exp.sp
+    """
+    if sp_v is None:
+        sp_v = exp.sp_v
+    if splitter_params is None:
+        splitter_params = exp.splitter_params.copy()
+    """
+    if title is None:
+        title = exp.title
 
     # 새 Experimenter 생성
-    new_exp = Experimenter(data, data_names=data_names, sp=sp, sp_v=sp_v, **args)
+    new_exp = Experimenter(data, data_names=data_names, sp=sp, sp_v=sp_v, splitter_params=splitter_params, title=title)
     print(f"   ├─ Created base Experimenter with {len(new_exp.train_idx_list)} fold(s)")
 
     # 그룹 복제 (부모-자식 관계를 유지하기 위해 위상 정렬)
@@ -933,7 +1078,7 @@ def create_like(exp, data, data_names=None, sp=None, sp_v=None, **args):
     # 노드 복제 (위상 정렬: Root부터 BFS)
     # 1. 노드의 우선순위 계산 (BFS)
     node_priorities = {}
-    queue = [('Root', 1)]
+    queue = [(None, 1)]
 
     while queue:
         current_node, priority = queue.pop(0)
@@ -945,11 +1090,8 @@ def create_like(exp, data, data_names=None, sp=None, sp_v=None, **args):
 
         # current_node를 edge로 가지는 child 노드들 찾기
         for name, node in exp.nodes.items():
-            if name is not None and name not in node_priorities:
-                for edge_name, _ in node.edges:
-                    if (current_node == 'Root' and edge_name is None) or (edge_name == current_node):
-                        queue.append((name, priority + 1))
-                        break
+            if name is not None and name not in node_priorities and name == current_node:
+                queue.append((name, priority + 1))
 
     # 우선순위 순으로 노드 정렬
     sorted_nodes = sorted(
