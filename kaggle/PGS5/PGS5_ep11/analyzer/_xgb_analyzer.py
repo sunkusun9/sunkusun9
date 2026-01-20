@@ -35,7 +35,8 @@ class XGBAnalyzer:
         inner_results = {}
         for inner_idx, (processor, _, _) in enumerate(self.e.nodes[node].objs_[idx]):
             input_vars = list(processor.X_) if hasattr(processor, 'X_') and processor.X_ is not None else []
-            booster = processor.get_booster()
+            obj = processor.obj
+            booster = obj.get_booster()
 
             feature_importances_weight = self._get_importance(booster, 'weight', input_vars)
             feature_importances_gain = self._get_importance(booster, 'gain', input_vars)
@@ -43,7 +44,7 @@ class XGBAnalyzer:
             feature_importances_total_gain = self._get_importance(booster, 'total_gain', input_vars)
             feature_importances_total_cover = self._get_importance(booster, 'total_cover', input_vars)
 
-            evals_result = processor.evals_result() if hasattr(processor, 'evals_result') else {}
+            evals_result = obj.evals_result() if hasattr(obj, 'evals_result') else {}
 
             trees = booster.trees_to_dataframe()
 

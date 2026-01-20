@@ -1,4 +1,5 @@
 import re
+import tempfile
 import json
 import pandas as pd
 
@@ -26,34 +27,27 @@ class CatBoostAnalyzer:
         inner_results = {}
         for inner_idx, (processor, _, _) in enumerate(self.e.nodes[node].objs_[idx]):
             input_vars = list(processor.X_) if hasattr(processor, 'X_') and processor.X_ is not None else []
-
+            obj = processor.obj
             feature_importances_pvc = pd.Series(
-                processor.get_feature_importance(type='PredictionValuesChange'),
+                obj.get_feature_importance(type='PredictionValuesChange'),
                 index=input_vars,
                 name='feature_importances_pvc'
             )
 
-            feature_importances_lfc = pd.Series(
-                processor.get_feature_importance(type='LossFunctionChange'),
-                index=input_vars,
-                name='feature_importances_lfc'
-            )
-
-            interaction = processor.get_feature_importance(type='Interaction')
+            interaction = obj.get_feature_importance(type='Interaction')
             feature_importances_interaction = pd.DataFrame(
-                interaction,
-                index=input_vars,
-                columns=input_vars
+                interaction, columns = ['feat1', 'feat2', 'importance']
+            ).assign(
+                feat1 = lambda x: x['feat1'].astype('int').apply(lambda y: input_vars[y]),
+                feat2 = lambda x: x['feat2'].astype('int').apply(lambda y: input_vars[y]),
             )
+            evals_result = obj.get_evals_result() if hasattr(obj, 'get_evals_result') else {}
 
-            evals_result = processor.get_evals_result() if hasattr(processor, 'get_evals_result') else {}
-
-            model_json = processor.save_model(None, format='json')
-            trees = json.loads(model_json).get('oblivious_trees', [])
-
+            with tempfile.NamedTemporaryFile(suffix=".json") as f:
+                obj.save_model(f.name, format="json")
+                trees = json.load(f).get('oblivious_trees', [])
             inner_results[inner_idx] = {
                 'feature_importances_pvc': feature_importances_pvc,
-                'feature_importances_lfc': feature_importances_lfc,
                 'feature_importances_interaction': feature_importances_interaction,
                 'evals_result': evals_result,
                 'trees': trees
@@ -94,20 +88,6 @@ class CatBoostAnalyzer:
             if (node, i) in self.result:
                 for inner_idx, df in self.result[(node, i)].items():
                     df = df['feature_importances_pvc']
-                    df = df.to_frame() if type(df) == pd.Series else df.copy()
-                    df.columns = pd.MultiIndex.from_product([[i], [inner_idx], df.columns])
-                    dfs.append(df)
-        return pd.concat(dfs, axis=1)
-
-    def get_feature_importances_lfc(self, node):
-        if (node, 0) not in self.result:
-            self.set_node(node)
-
-        dfs = list()
-        for i in range(self.e.get_n_splits()):
-            if (node, i) in self.result:
-                for inner_idx, df in self.result[(node, i)].items():
-                    df = df['feature_importances_lfc']
                     df = df.to_frame() if type(df) == pd.Series else df.copy()
                     df.columns = pd.MultiIndex.from_product([[i], [inner_idx], df.columns])
                     dfs.append(df)

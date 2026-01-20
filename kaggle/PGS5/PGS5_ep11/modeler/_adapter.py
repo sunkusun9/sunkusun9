@@ -47,6 +47,17 @@ class ModelAdapter(ABC):
         """
         pass
 
+    def get_params(self, params):
+        """모델 생성자에 전달할 파라미터를 조정
+
+        Args:
+            params (dict): 원본 파라미터
+
+        Returns:
+            dict: 조정된 파라미터
+        """
+        return params
+
 
 class XGBoostAdapter(ModelAdapter):
     """Adapter for XGBoost models (XGBClassifier, XGBRegressor)
@@ -54,58 +65,62 @@ class XGBoostAdapter(ModelAdapter):
     XGBoost는 eval_set 파라미터로 [(X, y), ...] 형태를 받습니다.
     """
 
+    def get_params(self, params):
+        """XGBoost 모델 생성자 파라미터 조정 (ProgressCallback 설정)"""
+        if params is None:
+            params = {}
+
+        if self.verbose > 0 and self.verbose < 1:
+            # 0 < verbose < 1: 진행률 기반 출력을 위한 callback 설정
+            from xgboost.callback import TrainingCallback
+
+            class ProgressCallback(TrainingCallback):
+                def __init__(self, n_estimators, period_pct):
+                    self.n_estimators = n_estimators
+                    self.period_pct = period_pct
+                    self.last_printed = -1
+
+                def after_iteration(self, model, epoch, evals_log):
+                    current = epoch + 1
+                    percentage = (current / self.n_estimators) * 100
+
+                    # period_pct마다 출력
+                    if int(percentage / (self.period_pct * 100)) > self.last_printed:
+                        self.last_printed = int(percentage / (self.period_pct * 100))
+
+                        # metric 정보 추출
+                        metrics_str = ""
+                        if evals_log:
+                            last_metrics = []
+                            for dataset, metrics in evals_log.items():
+                                for metric_name, values in metrics.items():
+                                    last_metrics.append(f"{dataset}-{metric_name}: {values[-1]:.4f}")
+                            metrics_str = " | " + ", ".join(last_metrics)
+
+                        print(f"\r  Progress: {current}/{self.n_estimators} ({percentage:.1f}%){metrics_str}", end='', flush=True)
+
+                    return False
+
+            n_estimators = params.get('n_estimators', 100)
+            callbacks = params.get('callbacks', [])
+            callbacks.append(ProgressCallback(n_estimators, self.verbose))
+            params['callbacks'] = callbacks
+
+        return params
+
     def get_fit_params(self, X_train, y_train=None, X_eval=None, y_eval=None, params=None):
         """XGBoost의 fit 파라미터 구성"""
         fit_params = {}
-
+        if params is not None and params.get('verbosity') > 0:
+            fit_params['verbose'] = True
+        else:
+            fit_params['verbose'] = False
         # eval_set 구성
         if self.eval_mode and self.eval_mode != 'none' and X_eval is not None and y_eval is not None:
             if self.eval_mode == 'valid':
                 fit_params['eval_set'] = [(X_eval, y_eval)]
             elif self.eval_mode == 'both':
                 fit_params['eval_set'] = [(X_train, y_train), (X_eval, y_eval)]
-
-        # verbose 처리
-        if self.verbose > 0:
-            if self.verbose < 1:
-                # 0 < verbose < 1: 진행률 기반 출력
-                from xgboost.callback import TrainingCallback
-
-                class ProgressCallback(TrainingCallback):
-                    def __init__(self, n_estimators, period_pct):
-                        self.n_estimators = n_estimators
-                        self.period_pct = period_pct
-                        self.last_printed = -1
-
-                    def after_iteration(self, model, epoch, evals_log):
-                        current = epoch + 1
-                        percentage = (current / self.n_estimators) * 100
-
-                        # period_pct마다 출력
-                        if int(percentage / (self.period_pct * 100)) > self.last_printed:
-                            self.last_printed = int(percentage / (self.period_pct * 100))
-
-                            # metric 정보 추출
-                            metrics_str = ""
-                            if evals_log:
-                                last_metrics = []
-                                for dataset, metrics in evals_log.items():
-                                    for metric_name, values in metrics.items():
-                                        last_metrics.append(f"{dataset}-{metric_name}: {values[-1]:.4f}")
-                                metrics_str = " | " + ", ".join(last_metrics)
-
-                            print(f"\r  Progress: {current}/{self.n_estimators} ({percentage:.1f}%){metrics_str}", flush=True)
-
-                        return False
-
-                # n_estimators 추출 (기본값 100)
-                n_estimators = params.get('n_estimators', 100) if params else 100
-                callbacks = fit_params.get('callbacks', [])
-                callbacks.append(ProgressCallback(n_estimators, self.verbose))
-                fit_params['callbacks'] = callbacks
-            else:
-                # verbose >= 1: XGBoost 기본 verbose (iteration 단위)
-                fit_params['verbose'] = int(self.verbose)
 
         return fit_params
 

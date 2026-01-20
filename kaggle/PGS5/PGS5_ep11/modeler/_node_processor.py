@@ -149,7 +149,9 @@ class PredictProcessor():
 
     def fit(self, train, valid):
         self.X_ = resolve_columns(train, self.X, self.y)
-        self.obj = self.estimator(**self.params)
+        # adapter가 있으면 params 조정 (callbacks 등 설정)
+        params = self.adapter.get_params(self.params) if self.adapter is not None else self.params
+        self.obj = self.estimator(**params)
         fit_params = {}
 
         # DataWrapper에서 컬럼 선택
@@ -202,7 +204,9 @@ class PredictProcessor():
 
     def fit_process(self, train, valid):
         self.X_ = resolve_columns(train, self.X, self.y)
-        self.obj = self.estimator(**self.params)
+        # adapter가 있으면 params 조정 (callbacks 등 설정)
+        params = self.adapter.get_params(self.params) if self.adapter is not None else self.params
+        self.obj = self.estimator(**params)
         fit_params = {}
 
         # DataWrapper에서 native로 변환

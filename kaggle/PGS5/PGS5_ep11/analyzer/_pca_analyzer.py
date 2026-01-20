@@ -104,7 +104,7 @@ class PCAAnalyzer:
         return pd.concat(dfs, axis=1)
 
     def get_components(self, node):
-        if (node, idx) not in self.result:
+        if (node, 0) not in self.result:
             self.set_node(node)
 
         dfs = list()        
