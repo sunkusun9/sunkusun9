@@ -1,3 +1,4 @@
+import re
 import uuid
 import pickle as pkl
 from sklearn.model_selection import ShuffleSplit
@@ -305,6 +306,26 @@ class Experimenter():
 
         return result
 
+    def get_node_names(self, query):
+        if isinstance(query, str):
+            if query not in self.grps:
+                return []
+
+            result = []
+            def collect_nodes(grp):
+                result.extend(grp.nodes)
+                for child_grp in grp.child_grps:
+                    collect_nodes(child_grp)
+
+            collect_nodes(self.grps[query])
+            return result
+
+        elif isinstance(query, re.Pattern):
+            return [name for name in self.nodes.keys() if name is not None and query.search(name)]
+
+        else:
+            raise ValueError(f"query must be str or re.Pattern, got {type(query)}")
+
     def remove_node(self, name):
         """노드를 제거
 
@@ -605,6 +626,58 @@ class Experimenter():
                   등장 빈도의 내림차순으로 정렬
         """
         return desc_node_vars(self, node_name, idx)
+
+    def get_node_vars(self, node_name, idx):
+        """특정 노드의 입력/출력 변수를 가져옴
+
+        Args:
+            node_name: 대상 노드 이름
+            idx: 외부 fold 인덱스
+
+        Returns:
+            list: [(입력변수 리스트, 출력변수 리스트, 해당 내부 폴드 index 리스트), ...]
+                  등장 빈도의 내림차순으로 정렬
+        """
+        if node_name not in self.nodes or node_name is None:
+            raise ValueError(f"Node '{node_name}' not found")
+
+        node = self.nodes[node_name]
+
+        # 노드가 빌드되지 않았으면 에러
+        if not hasattr(node, 'objs_') or node.objs_ is None:
+            raise ValueError(f"Node '{node_name}' is not built yet. Please call node.build() first.")
+
+        # idx가 유효한지 확인
+        if idx < 0 or idx >= len(node.objs_):
+            raise ValueError(f"Invalid idx: {idx}. Valid range is 0 to {len(node.objs_) - 1}")
+
+        # 외부 fold의 내부 fold들: [(processor, train_v, info), ...]
+        inner_folds = node.objs_[idx]
+
+        # (입력변수 튜플, 출력변수 튜플) -> 내부 fold index 리스트
+        var_map = {}
+
+        for inner_idx, (processor, train_v, info) in enumerate(inner_folds):
+            # 입력 변수와 출력 변수 가져오기
+            input_vars = tuple(processor.X_) if hasattr(processor, 'X_') and processor.X_ is not None else ()
+            output_vars = tuple(processor.output_vars) if hasattr(processor, 'output_vars') and processor.output_vars is not None else ()
+
+            # 튜플 키 생성
+            key = (input_vars, output_vars)
+
+            if key not in var_map:
+                var_map[key] = []
+            var_map[key].append(inner_idx)
+
+        # 결과 리스트 생성: [(입력변수 리스트, 출력변수 리스트, 내부 폴드 index 리스트), ...]
+        result = []
+        for (input_vars, output_vars), fold_indices in var_map.items():
+            result.append((list(input_vars), list(output_vars), fold_indices))
+
+        # 등장 빈도(내부 폴드 개수)의 내림차순으로 정렬
+        result.sort(key=lambda x: len(x[2]), reverse=True)
+
+        return result
 
     def save(self, filepath):
         """Experimenter 객체를 파일로 저장

@@ -400,7 +400,7 @@ def desc_node(exp, node_name, direction='TD', show_params=False):
     return "\n".join(lines)
 
 def desc_node_vars(exp, node_name, idx):
-    """특정 노드의 입력/출력 변수를 분석
+    """특정 노드의 입력/출력 변수를 DataFrame으로 정리
 
     Args:
         exp: Experimenter 인스턴스
@@ -408,46 +408,42 @@ def desc_node_vars(exp, node_name, idx):
         idx: 외부 fold 인덱스
 
     Returns:
-        list: [(입력변수 리스트, 출력변수 리스트, 해당 내부 폴드 index 리스트), ...]
-              등장 빈도의 내림차순으로 정렬
+        tuple: (입력변수 DataFrame, 출력변수 DataFrame)
+            - 입력변수 DataFrame: MultiIndex(처리노드명, 일련번호), 컬럼='name', 값=전체변수명
+            - 출력변수 DataFrame: Index=일련번호, 컬럼='name', 값=전체변수명
     """
-    if node_name not in exp.nodes or node_name is None:
-        raise ValueError(f"Node '{node_name}' not found")
+    import pandas as pd
 
-    node = exp.nodes[node_name]
+    # get_node_vars 호출
+    result = exp.get_node_vars(node_name, idx)
 
-    # 노드가 빌드되지 않았으면 에러
-    if not hasattr(node, 'objs_') or node.objs_ is None:
-        raise ValueError(f"Node '{node_name}' is not built yet. Please call node.build() first.")
+    if not result:
+        return pd.DataFrame(columns=['name']), pd.DataFrame(columns=['name'])
 
-    # idx가 유효한지 확인
-    if idx < 0 or idx >= len(node.objs_):
-        raise ValueError(f"Invalid idx: {idx}. Valid range is 0 to {len(node.objs_) - 1}")
+    # 첫 번째 항목 사용 (가장 빈도 높은 것)
+    input_vars, output_vars, fold_indices = result[0]
 
-    # 외부 fold의 내부 fold들: [(processor, train_v, info), ...]
-    inner_folds = node.objs_[idx]
+    # 입력 변수 DataFrame 생성
+    input_data = []
+    for var in input_vars:
+        if '__' in var:
+            node = var.split('__')[0]
+        else:
+            node = 'Root'
+        input_data.append({'node': node, 'name': var})
 
-    # (입력변수 튜플, 출력변수 튜플) -> 내부 fold index 리스트
-    var_map = {}
+    if input_data:
+        input_df = pd.DataFrame(input_data)
+        # 노드별로 일련번호 부여
+        input_df['seq'] = input_df.groupby('node').cumcount()
+        input_df = input_df.set_index(['node', 'seq'])[['name']]
+    else:
+        input_df = pd.DataFrame(columns=['name'])
 
-    for inner_idx, (processor, train_v, info) in enumerate(inner_folds):
-        # 입력 변수와 출력 변수 가져오기
-        input_vars = tuple(processor.X_) if hasattr(processor, 'X_') and processor.X_ is not None else ()
-        output_vars = tuple(processor.output_vars) if hasattr(processor, 'output_vars') and processor.output_vars is not None else ()
+    # 출력 변수 DataFrame 생성
+    if output_vars:
+        output_df = pd.DataFrame({'name': output_vars})
+    else:
+        output_df = pd.DataFrame(columns=['name'])
 
-        # 튜플 키 생성
-        key = (input_vars, output_vars)
-
-        if key not in var_map:
-            var_map[key] = []
-        var_map[key].append(inner_idx)
-
-    # 결과 리스트 생성: [(입력변수 리스트, 출력변수 리스트, 내부 폴드 index 리스트), ...]
-    result = []
-    for (input_vars, output_vars), fold_indices in var_map.items():
-        result.append((list(input_vars), list(output_vars), fold_indices))
-
-    # 등장 빈도(내부 폴드 개수)의 내림차순으로 정렬
-    result.sort(key=lambda x: len(x[2]), reverse=True)
-
-    return result
+    return input_df, output_df

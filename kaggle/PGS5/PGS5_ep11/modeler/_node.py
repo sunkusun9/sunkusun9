@@ -4,7 +4,10 @@ from ._node_processor import TransformProcessor, PredictProcessor, resolve_colum
 import numpy as np
 
 class NodeGroup():
-    def __init__(self, experimenter, name, processor = None, edges = list(), X = None, y = None, method = 'transform', parent_grp = None, adapter = 'default', params = None):
+    def __init__(
+        self, experimenter, name, processor = None, edges = list(), X = None, y = None, 
+        method = 'transform', parent_grp = None, adapter = 'default', params = None
+    ):
         self.experimenter = experimenter
         self.name = name
         self.processor = processor

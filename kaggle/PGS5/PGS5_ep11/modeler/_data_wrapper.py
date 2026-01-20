@@ -101,6 +101,10 @@ class DataWrapper(ABC):
         """
         return self.data
 
+    @abstractmethod
+    def to_array(self, array_type='ndarray'):
+        pass
+
     @staticmethod
     def from_native(data):
         """Create appropriate wrapper from native data object
@@ -282,6 +286,11 @@ class PandasWrapper(DataWrapper):
         elif isinstance(data_list[0], pd.Series):
             return wrap(pd.concat(data_list).mode(axis = 1)[0])
 
+    def to_array(self, array_type='ndarray'):
+        if array_type == 'ndarray':
+            return self.data.to_numpy()
+        raise ValueError(f"Unsupported array_type: {array_type}")
+
 class PolarsWrapper(DataWrapper):
     """Wrapper for Polars DataFrame"""
 
@@ -405,6 +414,11 @@ class PolarsWrapper(DataWrapper):
             mode_values = combined.to_pandas().mode(axis=1)[0].values
             return wrap(pl.Series(data_list[0].name, mode_values))
 
+    def to_array(self, array_type='ndarray'):
+        if array_type == 'ndarray':
+            return self.data.to_numpy()
+        raise ValueError(f"Unsupported array_type: {array_type}")
+
 class CudfWrapper(DataWrapper):
     """Wrapper for cuDF DataFrame (GPU-accelerated)"""
 
@@ -506,6 +520,11 @@ class CudfWrapper(DataWrapper):
         elif isinstance(data_list[0], cudf.Series):
             combined = pd.concat([s.to_pandas() for s in data_list], axis=1)
             return wrap(cudf.Series(combined.mode(axis=1)[0]))
+
+    def to_array(self, array_type='ndarray'):
+        if array_type == 'ndarray':
+            return self.data.to_numpy()
+        raise ValueError(f"Unsupported array_type: {array_type}")
 
 class NumpyWrapper(DataWrapper):
     """Wrapper for NumPy ndarray"""
@@ -633,6 +652,11 @@ class NumpyWrapper(DataWrapper):
         # scipy.stats.mode를 사용하여 마지막 축(n_arrays)에서 최빈값 계산
         mode_result = stats.mode(stacked, axis=-1, keepdims=False)
         return wrap(mode_result.mode)
+
+    def to_array(self, array_type='ndarray'):
+        if array_type == 'ndarray':
+            return self.data
+        raise ValueError(f"Unsupported array_type: {array_type}")
 
 
 def wrap(data):
