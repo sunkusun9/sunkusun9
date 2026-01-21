@@ -295,7 +295,6 @@ class CategoricalPairCombiner(BaseEstimator, TransformerMixin):
             return out
         return out
 
-
 class CatOOVFilter(TransformerMixin, BaseEstimator):
     def __init__(self):
         pass

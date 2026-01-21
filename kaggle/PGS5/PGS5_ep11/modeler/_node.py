@@ -1,12 +1,13 @@
 import uuid
-from ._adapter import get_adapter
+from .adapter import get_adapter
 from ._node_processor import TransformProcessor, PredictProcessor, resolve_columns
 import numpy as np
+import pandas as pd
 
 class NodeGroup():
     def __init__(
         self, experimenter, name, processor = None, edges = list(), X = None, y = None, 
-        method = 'transform', parent_grp = None, adapter = 'default', params = None
+        method = 'transform', role = 'pipe', parent_grp = None, adapter = 'default', params = None
     ):
         self.experimenter = experimenter
         self.name = name
@@ -17,6 +18,14 @@ class NodeGroup():
         self.method = method
         self.params = params if params is not None else {}
         self.nodes = []
+        if role is not None and parent_grp is not None:
+            raise ValueError("Cannot assign role if parent_grp is assigned")
+        elif role is None and parent_grp is None:
+            raise ValueError("Sholud assign role if parent_grp is not assigned")
+        elif parent_grp is not None:
+            self.role = parent_grp.role
+        else:
+            self.role = role
         self.parent_grp = parent_grp
         self.child_grps = []
         self.adapter = adapter
@@ -49,12 +58,12 @@ class NodeGroup():
 
 class Node():
     def __init__(
-        self, experimenter, name, processor, edges, X = None, y = None, method = 'transform',
-        use_cache = True, grp_name = None, org_attr = None, adapter = 'default', params = None
+        self, experimenter, name, processor, edges, grp, X = None, y = None, method = 'transform',
+        use_cache = True, org_attr = None, adapter = 'default', params = None
     ):
         self.experimenter = experimenter
         self.name = name
-        self.grp_name = grp_name  # 속한 그룹 이름
+        self.grp = grp  # 속한 그룹
         self.org_attr = org_attr  # 원본 속성 (processor, edges, X, y, method, params)
         self.processor = processor
         self.method = method
@@ -63,8 +72,12 @@ class Node():
         self.X = X
         self.y = y
         self.use_cache = use_cache
-        self.adapter = adapter
-        self.build()
+        # adapter 인스턴스 가져오기
+        if adapter == 'default':
+            self.adapter_ = get_adapter(self.processor)
+        else:
+            self.adapter_ = self.adapter
+        self.initialize()
 
     def _unload_cache(self):
         self.cache_idx = -1
@@ -77,7 +90,6 @@ class Node():
         self.cache_t = None
         self.cache_t_param_v = None
 
-
     def build(self):
         if self.method in ['transform', 'predict', 'predict_proba']:
             self._fit()
@@ -85,98 +97,132 @@ class Node():
             self._fit_process()
         else:
             raise ValueError(f"Unknown processor_type: {self.method}")
+        self.status = "built"
+
+    def start_incremental_build(self):
+        self.initialize()
+        self.objs_ = list()
+    
+    def build_idx(self, idx):
+        if idx != len(self.objs_):
+            raise RuntimeError(f"{self.name}: Build sequence is not valid")
+        if self.method in ['transform', 'predict', 'predict_proba']:
+            self.objs_.append(self._build_obj(self.experimenter.get_data(idx, self.edges), False))
+        elif self.method in ['fit_transform', 'fit_predict']:
+            self.objs_.append(self._build_obj(self.experimenter.get_data(idx, self.edges), True))
+        else:
+            raise ValueError(f"Unknown processor_type: {self.method}")
+        self.status = "built"
+
+    def _build_sub(self, train_t, train_v, fit_process):
+        if self.method in ['transform', 'fit_transform']:
+            obj = TransformProcessor(self, self.processor, X = self.X, y = self.y, adapter = self.adapter_, **self.params)
+        else:
+            obj = PredictProcessor(self, self.processor, X = self.X, y = self.y, method = self.method, adapter = self.adapter_, **self.params)
+
+        # 수행시간 측정
+        import time
+        start_time = time.time()
+        if fit_process:
+            result = obj.fit_process(train_t, train_v)
+        else:
+            result = None
+            obj.fit(train_t, train_v)
+        elapsed_time = time.time() - start_time
+
+        info = {
+            'build_id': str(uuid.uuid4()),
+            'fit_time': elapsed_time,
+            'train_shape': train_t.get_shape() if train_t is not None else None,
+            'train_v_shape': train_v.get_shape() if train_v is not None else None
+        }
+        return obj, result, info
+
+    def _build_obj(self, train, fit_process):
+        sub = list()
+        for (train_t, train_v), _ in train:
+            sub.append(self._build_sub(train_t, train_v, fit_process))
+        return sub
+
+    def get_result_idx(self, idx, result):
+        ret = list()       
+        for no, (i, _, _) in enumerate(self.objs_[idx]):
+            r = self.adapter_.get_result(i, result)
+            if result == 'metric':
+                pass
+            elif result == 'stacking':
+                pass
+            elif type(r) in [pd.Series, pd.DataFrame]:
+                ret.append(
+                    r.T.set_index(pd.MultiIndex.from_product([[idx], [no], r.columns])).T
+                )
+            else:
+                ret.append(r)
+        if type(ret[0]) in [pd.Series, pd.DataFrame]:
+            return pd.concat(ret, axis = 1)
+        return ret
+
+    def get_result(self, result):
+        ret = list()
+        for idx in range(self.experimenter.get_n_splits()):
+            r = self.get_result_idx(idx, result)
+            ret.append(r)
+        if type(ret[0]) in [pd.Series, pd.DataFrame]:
+            return pd.concat(ret, axis = 1)
+        return ret
+    
+    def finalize(self):
+        self._unload_cache()
+        if self.status != "built":
+            raise RuntimeError("Not built")
+        for i, o_list in enumerate(self.objs_):
+            o_list_new  = list()
+            for obj in o_list: 
+                del obj[0]
+                o_list_new.append((None, None, obj[2]))
+            self.objs_[i] = o_list_new
+        self.status = "finalized"
+
+    def initialize(self):
+        self._unload_cache()
+        self.status = None
+        self.objs_ = None
 
     def _fit(self):
-        self._unload_cache()
         self.objs_ = list()
-
-        # adapter 인스턴스 가져오기
-        if self.adapter == 'default':
-            adapter_ = get_adapter(self.processor)
-        else:
-            adapter_ = self.adapter
-
         # 전체 검증 수 계산
-        total_folds = sum(len(self.experimenter.train_idx_list[i]) for i in range(len(self.experimenter.train_idx_list)))
+        total_folds = len(self.experimenter.train_idx_list)
         current = 0
 
         for train in self.experimenter.split(self.edges):
-            sub = list()
-            for (train_t, train_v), _ in train:
-                # 진행상황 출력
-                current += 1
-                percentage = int(current * 100 / total_folds)
-                print(f"\r[{self.name}] Building: {current}/{total_folds} ({percentage}%)", end='', flush=True)
-                if self.method in ['transform', 'fit_transform']:
-                    obj = TransformProcessor(self, self.processor, X = self.X, y = self.y, adapter = adapter_, **self.params)
-                else:
-                    obj = PredictProcessor(self, self.processor, X = self.X, y = self.y, method = self.method, adapter = adapter_, **self.params)
-
-                # 수행시간 측정
-                import time
-                start_time = time.time()
-                obj.fit(train_t, train_v)
-                elapsed_time = time.time() - start_time
-
-                # 수행 정보 저장
-                info = {
-                    'build_id': str(uuid.uuid4()),
-                    'fit_time': elapsed_time,
-                    'train_shape': train_t.get_shape() if train_t is not None else None,
-                    'train_v_shape': train_v.get_shape() if train_v is not None else None
-                }
-                sub.append((obj, None, info))
-            self.objs_.append(sub)
+            current += 1
+            percentage = int(current * 100 / total_folds)
+            print(f"\r[{self.name}] Building: {current}/{total_folds} ({percentage}%)", end='', flush=True)
+            self.objs_.append(self._build_obj(train, False))
 
         # 완료 메시지 출력
-        print(f"\r[{self.name}] Building: {total_folds}/{total_folds} (100%) ✓ Complete")
+        print(f"\r[{self.name}] Built: {total_folds}/{total_folds} (100%) ✓ Complete")
 
     def _fit_process(self):
         self._unload_cache()
         self.objs_ = list()
 
-        # adapter 인스턴스 가져오기
-        if self.adapter == 'default':
-            adapter_ = adapter.get_adapter(self.processor)
-        else:
-            adapter_ = self.adapter
-
         # 전체 검증 수 계산
-        total_folds = sum(len(self.experimenter.train_idx_list[i]) for i in range(len(self.experimenter.train_idx_list)))
+        total_folds = len(self.experimenter.train_idx_list)
         current = 0
 
         for train in self.experimenter.split(self.edges):
-            sub = list()
-            for (train_t, train_v), _ in train:
-                if self.method in ['transform', 'fit_transform']:
-                    obj = TransformProcessor(self, self.processor, X = self.X, y = self.y, adapter = adapter_, **self.params)
-                else:
-                    obj = PredictProcessor(self, self.processor, X = self.X, y = self.y, method = self.method, adapter = adapter_, **self.params)
-
-                # 수행시간 측정
-                import time
-                start_time = time.time()
-                result = obj.fit_process(train_t, train_v)
-                elapsed_time = time.time() - start_time
-
-                info = {
-                    'build_id': str(uuid.uuid4()),
-                    'fit_time': elapsed_time,
-                    'train_shape': train_t.get_shape() if train_t is not None else None,
-                    'train_v_shape': train_v.get_shape() if train_v is not None else None
-                }
-                sub.append((obj, result, info))
-
-                # 진행상황 출력
-                current += 1
-                percentage = int(current * 100 / total_folds)
-                print(f"\r[{self.name}] Building: {current}/{total_folds} ({percentage}%)", end='', flush=True)
-            self.objs_.append(sub)
+            current += 1
+            percentage = int(current * 100 / total_folds)
+            print(f"\r[{self.name}] Building: {current}/{total_folds} ({percentage}%)", end='', flush=True)
+            self.objs_.append(self._build_obj(train, True))
 
         # 완료 메시지 출력
-        print(f"\r[{self.name}] Building: {total_folds}/{total_folds} (100%) ✓ Complete")
+        print(f"\r[{self.name}] Built: {total_folds}/{total_folds} (100%) ✓ Complete")
 
     def get_data(self, idx, v = None):
+        if self.objs_ is None:
+            raise RuntimeError("f{self.name} is not built")
         if self.cache_idx == idx and self.cache_v_param == v and self.cache is not None:
             def ret_func():
                 for i in self.cache:

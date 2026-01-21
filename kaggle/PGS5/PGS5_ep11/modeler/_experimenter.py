@@ -8,7 +8,7 @@ from ._node import NodeGroup, Node, RootNode
 from ._describer import desc_spec, desc_pipeline, desc_node, desc_node_vars
 
 class Experimenter():
-    def __init__(self, data, data_names=None, sp=ShuffleSplit(n_splits=1, random_state=1), sp_v=None, splitter_params=None, title=None):
+    def __init__(self, data, data_names=None, sp=ShuffleSplit(n_splits=1, random_state=1), sp_v=None, splitter_params=None, title=None, stacking =  None):
         self.train_idx_list = list()
         self.valid_idx_list = list()
         data_native = data
@@ -51,6 +51,8 @@ class Experimenter():
             self.valid_idx_list.append(valid_idx)
         self.nodes = {None: RootNode(self, data)}
         self.grps = {}
+        self.stacking = stacking
+        
 
     def get_n_splits(self):
         return len(self.train_idx_list)
@@ -129,15 +131,14 @@ class Experimenter():
 
         print("✅ Rebuild complete!")
     
-    def add_grp(self, name, processor = None, edges = list(), X = None, y = None, method = None, parent_grp = None, adapter = 'default', params = None):
+    def add_grp(self, name, processor = None, edges = list(), X = None, y = None, method = None, role = None, parent_grp = None, adapter = 'default', params = None):
         # parent_grp가 문자열이면 grps에서 찾기
-        if isinstance(parent_grp, str):
+        if parent_grp is not None:
             if parent_grp not in self.grps:
                 raise ValueError(f"Parent group '{parent_grp}' not found")
             parent_grp = self.grps.get(parent_grp)
-
         # NodeGroup 생성
-        grp = NodeGroup(self, name, processor=processor, edges=edges, X=X, y=y, method=method, parent_grp=parent_grp, adapter=adapter, params=params)
+        grp = NodeGroup(self, name, processor=processor, edges=edges, X=X, y=y, method=method, role=role, parent_grp=parent_grp, adapter=adapter, params=params)
 
         # parent의 child_grps에 추가
         if parent_grp is not None:
@@ -148,7 +149,7 @@ class Experimenter():
 
         return grp
 
-    def set_grp(self, name, processor = None, edges = None, X = None, y = None, method = None, parent_grp = None, adapter = 'default', params = None):
+    def set_grp(self, name, processor = None, edges = None, X = None, y = None, method = None, role = None, parent_grp = None, adapter = 'default', params = None):
         if name not in self.grps:
             print(f"⚠️  Group '{name}' not found")
             return
@@ -167,15 +168,25 @@ class Experimenter():
                 new_parent = parent_grp
 
             # 이전 parent_grp와 다른 경우
-            if grp.parent_grp != new_parent:
-                # 이전 parent의 child_grps에서 제거
-                if grp.parent_grp is not None:
-                    grp.parent_grp.child_grps.remove(grp)
+            if grp.parent_grp is None:
+                if grp.parent_grp != new_parent:
+                    if grp.parent_grp.role != new_parent.role:
+                        raise  "The role of parent should be equal"
+                    # 이전 parent의 child_grps에서 제거
+                    if grp.parent_grp is not None:
+                        grp.parent_grp.child_grps.remove(grp)
 
-                # 새로운 parent의 child_grps에 추가
-                grp.parent_grp = new_parent
-                if new_parent is not None:
-                    new_parent.child_grps.append(grp)
+                    # 새로운 parent의 child_grps에 추가
+                    grp.parent_grp = new_parent
+                    if new_parent is not None:
+                        new_parent.child_grps.append(grp)
+            else:
+                if new_parent is None:
+                    if grp.role != role:
+                        raise  "The role should be equal"
+                else:
+                    if grp.role != new_parent.role:
+                        raise  "The role should be equal"
 
         # 그룹 속성 업데이트
         if processor is not None:
@@ -214,13 +225,19 @@ class Experimenter():
                         raise ValueError(f"Cannot update group '{name}': node '{node_name}' would create cycle through edge(s) {cycle_info}")
 
             print(f"✅ Cycle check passed for all nodes in group '{name}'")
+        node_to_initialize = self._get_effected_nodes(grp.nodes)
+        for i in node_to_initialize:
+            i.initialize()
 
+        print(f"{len(node_to_initialize)} node(s) affected by group '{name}' update")
+
+    def _get_effected_nodes(self, nodes):
         # 우선순위 알고리즘: BFS로 노드들의 빌드 우선순위 결정
         priorities = {}
         queue = []
 
         # 변경된 그룹의 노드들을 Root로 우선순위 1 할당
-        for node_name in grp.nodes:
+        for node_name in nodes:
             priorities[node_name] = 1
             queue.append((node_name, 1))
 
@@ -237,35 +254,10 @@ class Experimenter():
                 if desc_node not in priorities or priorities[desc_node] < new_priority:
                     priorities[desc_node] = new_priority
                     queue.append((desc_node, new_priority))
-
         # 우선순위 순으로 정렬 (낮은 숫자가 먼저)
         sorted_nodes = sorted(priorities.items(), key=lambda x: x[1])
-
-        print(f"🔄 Rebuilding {len(sorted_nodes)} node(s) affected by group '{name}' update")
-
-        # 순서대로 rebuild
-        for node_name, priority in sorted_nodes:
-            if node_name in self.nodes:
-                node = self.nodes[node_name]
-                if node.org_attr is not None:
-                    print(f"  ├─ Rebuilding '{node_name}' (priority: {priority})...")
-                    # org_attr을 사용하여 set_node 재호출
-                    org = node.org_attr
-                    self.set_node(
-                        node_name,
-                        grp=node.grp_name,
-                        processor=org['processor'],
-                        edges=org['edges'],
-                        X=org['X'],
-                        y=org['y'],
-                        method=org['method'],
-                        adapter=org['adapter'],
-                        rebuild_descendants=False,  # 이미 순서대로 rebuild 중
-                        params=org['params']
-                    )
-
-        print("✅ Rebuild complete!")
-
+        return [self.nodes[i[0]] for i in sorted_nodes]
+    
     def remove_grp(self, name):
         if name not in self.grps:
             raise ValueError(f"Group '{name}' not found")
@@ -363,14 +355,11 @@ class Experimenter():
         print(f"✅ Node '{name}' removed")
 
     def set_node(
-        self, name, grp = None, processor = None, edges = list(), X = None, y = None, 
-        method = None, rebuild_descendants = True, adapter = 'default', params = None
+        self, name, grp, processor = None, edges = list(), X = None, y = None, 
+        method = None, adapter = 'default', params = None
     ):
         # 기존 노드가 있는지 확인
         is_update = name in self.nodes
-
-        if is_update:
-            print(f"⚠️  Updating existing node '{name}'")
 
         # params 기본값 처리
         if params is None:
@@ -388,42 +377,30 @@ class Experimenter():
         }
 
         # grp 이름 저장
-        grp_name = None
-        grp_obj = None
+        grp_name = grp
+        grp_obj = self.grps.get(grp, None)
+        if grp_obj is None:
+            raise ValueError(f"Group '{grp}' not found")
 
-        # grp 처리
-        if grp is not None:
-            # grp가 문자열이면 grps에서 찾기
-            if isinstance(grp, str):
-                grp_name = grp
-                grp_obj = self.grps.get(grp, None)
-                if grp_obj is None:
-                    raise ValueError(f"Group '{grp}' not found")
-            else:
-                grp_name = grp.name
-                grp_obj = grp
+        # grp의 attrs를 가져와서 기본값으로 사용
+        grp_attrs = grp_obj.get_attrs()
 
-            # grp의 attrs를 가져와서 기본값으로 사용
-            grp_attrs = grp_obj.get_attrs()
+        # 파라미터로 넘어온 값이 None이 아니면 override
+        if processor is None:
+            processor = grp_attrs.get('processor', None)
+        if len(grp_attrs['edges']) > 0:
+            edges = edges + grp_attrs['edges']
+        if X is None:
+            X = grp_attrs['X']
+        if y is None:
+            y = grp_attrs['y']
+        if method is None:
+            method = grp_attrs.get('method', None)
+        if adapter is None:
+            adapter = grp_attrs.get('adapter', None)
 
-            # 파라미터로 넘어온 값이 None이 아니면 override
-            if processor is None:
-                processor = grp_attrs.get('processor', None)
-            if len(grp_attrs['edges']) > 0:
-                edges = edges + grp_attrs['edges']
-            if X is None:
-                X = grp_attrs['X']
-            if y is None:
-                y = grp_attrs['y']
-            if method is None:
-                method = grp_attrs.get('method', None)
-            if adapter is None:
-                adapter = grp_attrs.get('adapter', None)
-
-            # params는 grp의 params를 가져와서 현재 params로 override
-            merged_params = {**grp_attrs['params'], **params}
-        else:
-            merged_params = params
+        # params는 grp의 params를 가져와서 현재 params로 override
+        merged_params = {**grp_attrs['params'], **params}
 
         # processor 체크
         if processor is None:
@@ -443,22 +420,23 @@ class Experimenter():
             cycle_info = ", ".join([f"'{e}'" for e in cycle_edges])
             raise ValueError(f"Cannot add node '{name}': would create cycle through edge(s) {cycle_info}")
 
-        node = Node(self, name, processor, edges, X = X, y = y, method = method, grp_name = grp_name, adapter = adapter, org_attr = org_attr, params = merged_params)
+        node = Node(self, name, processor, edges, X = X, y = y, method = method, grp = grp_obj, adapter = adapter, org_attr = org_attr, params = merged_params)
         # grp에 노드 추가
         if grp_obj is not None:
             if name not in grp_obj.nodes:
                 grp_obj.nodes.append(name)
 
         # 기존 노드를 업데이트한 경우, 하위 노드들도 재빌드
-        if is_update and rebuild_descendants:
+        if is_update:
             descendants = self._find_descendants(name)
             if descendants:
-                print(f"  └─ Found {len(descendants)} dependent node(s): {sorted(descendants)}")
-                self._rebuild_node_and_descendants(name)
+                print(f"  └─ Effeced {len(descendants)} dependent node(s): {sorted(descendants)}")
+                for i in descendants:
+                    self.nodes[i].initialize()
 
         # 그룹이 변경된 경우 이전 그룹에서 노드 제거
-        if is_update and self.nodes[name].grp_name != grp_name:
-            old_grp_name = self.nodes[name].grp_name
+        if is_update and self.nodes[name].grp.name != grp_name:
+            old_grp_name = self.nodes[name].grp.name
             if old_grp_name is not None and old_grp_name in self.grps:
                 old_grp = self.grps[old_grp_name]
                 if name in old_grp.nodes:
@@ -470,16 +448,41 @@ class Experimenter():
         self.nodes[name] = node
         return node
 
-    def rebuild_all(self):
-        """모든 노드를 재빌드 (Root 제외)"""
-        print("🔄 Rebuilding all nodes...")
+    def build_pipeline(self, rebuild = False):
+        node_of_rootgrp = list()
+        for grp in self.grps.values():
+            if grp.parent_grp is None and grp.role == 'pipe':
+                node_of_rootgrp.extend(grp.nodes)
+        nodes = [i for i in self._get_effected_nodes(node_of_rootgrp) if i.grp.role == 'pipe' and (i.status is None or rebuild)]
+        print(f"🔄 Building {len(nodes)} node(s)")
+        for node in nodes:
+            node.start_incremental_build()
+        for i in range(self.get_n_splits()):
+            for node in nodes:
+                print(f"  ├─ Building '{node.name}'...")
+                node.build_idx(i)
+        print("✅ Build complete!")
+    
+    def build_experiment(self, node_str, reexec = False):
+        pat = re.compile(node_str)
+        nodes = [v for k, v in self.nodes.items() if k is not None and pat.match(k) is not None and (v.status is None or reexec)]
+        nodes = [i for i in nodes if i.grp.role == 'exp']
+        print(f"🔄 Building {len(nodes)} node(s)")
+        for node in nodes:
+            node.start_incremental_build()
+        for i in range(self.get_n_splits()):
+            for node in nodes:
+                print(f"  ├─ Building '{node.name}'...")
+                node.build_idx(i)
+        print("✅ Build complete!")
 
-        for name, node in self.nodes.items():
-            if name is not None and hasattr(node, 'build'):
-                print(f"  ├─ Rebuilding '{name}'...")
-                node.build()
-
-        print("✅ All nodes rebuilt!")
+    def experiment_grp(self, grp):
+        if node_name not in self.nodes:
+            raise ValueError(f"{node_name} not found")
+        node = self.nodes[node_name]
+        if node.grp.role != "exp":
+            raise ValueError(f"{node_name} is not Experimentation")
+        node.build()
     
     def get_data(self, idx, edges):
         def ret_data_func(data_list):
@@ -503,7 +506,7 @@ class Experimenter():
         for node_name, var in edges:
             data_list.append(self.nodes[node_name].get_data(idx, var))
         return ret_data_func(data_list)
-
+    
     def get_data_train(self, idx, edges):
         def ret_data_func(data_list):
             for z in zip(*data_list):
@@ -722,7 +725,7 @@ class Experimenter():
 
         return exp
 
-def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=None, title=None):
+def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=None, title=None, stacking=None):
     """기존 Experimenter의 구조를 복제하여 새로운 Experimenter 생성
 
     Args:
@@ -733,6 +736,7 @@ def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=
         sp_v: 내부 splitter (None이면 원본과 동일)
         splitter_params: splitter에 전달할 파라미터 (None이면 원본과 동일)
         title: 실험 타이틀 (None이면 원본과 동일)
+        stacking: stacking 설정 (None이면 원본과 동일)
 
     Returns:
         Experimenter: 새로 생성된 Experimenter 인스턴스
@@ -741,17 +745,25 @@ def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=
 
     if sp is None:
         sp = exp.sp
-    """
     if sp_v is None:
         sp_v = exp.sp_v
     if splitter_params is None:
-        splitter_params = exp.splitter_params.copy()
-    """
+        splitter_params = exp.splitter_params.copy() if exp.splitter_params else None
     if title is None:
         title = exp.title
+    if stacking is None:
+        stacking = exp.stacking
 
     # 새 Experimenter 생성
-    new_exp = Experimenter(data, data_names=data_names, sp=sp, sp_v=sp_v, splitter_params=splitter_params, title=title)
+    new_exp = Experimenter(
+        data,
+        data_names=data_names,
+        sp=sp,
+        sp_v=sp_v,
+        splitter_params=splitter_params,
+        title=title,
+        stacking=stacking
+    )
     print(f"   ├─ Created base Experimenter with {len(new_exp.train_idx_list)} fold(s)")
 
     # 그룹 복제 (부모-자식 관계를 유지하기 위해 위상 정렬)
@@ -763,17 +775,33 @@ def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=
 
     def clone_group_recursive(orig_grp, parent_grp_name=None):
         """그룹을 재귀적으로 복제"""
-        new_grp = new_exp.add_grp(
-            name=orig_grp.name,
-            processor=orig_grp.processor,
-            edges=orig_grp.edges[:],  # 리스트 복사
-            X=orig_grp.X,
-            y=orig_grp.y,
-            method=orig_grp.method,
-            parent_grp=parent_grp_name,
-            adapter=orig_grp.adapter,
-            params=orig_grp.params.copy()
-        )
+        # 최상위 그룹일 때는 role 전달, 아니면 parent_grp에서 상속
+        if parent_grp_name is None:
+            new_grp = new_exp.add_grp(
+                name=orig_grp.name,
+                processor=orig_grp.processor,
+                edges=orig_grp.edges[:],  # 리스트 복사
+                X=orig_grp.X,
+                y=orig_grp.y,
+                method=orig_grp.method,
+                role=orig_grp.role,  # 최상위 그룹은 role 전달
+                parent_grp=None,
+                adapter=orig_grp.adapter,
+                params=orig_grp.params.copy() if orig_grp.params else {}
+            )
+        else:
+            new_grp = new_exp.add_grp(
+                name=orig_grp.name,
+                processor=orig_grp.processor,
+                edges=orig_grp.edges[:],  # 리스트 복사
+                X=orig_grp.X,
+                y=orig_grp.y,
+                method=orig_grp.method,
+                role=None,  # 자식 그룹은 parent_grp에서 role 상속
+                parent_grp=parent_grp_name,
+                adapter=orig_grp.adapter,
+                params=orig_grp.params.copy() if orig_grp.params else {}
+            )
         grp_mapping[orig_grp.name] = new_grp
 
         # 자식 그룹들도 복제
@@ -789,7 +817,7 @@ def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=
     # 노드 복제 (위상 정렬: Root부터 BFS)
     # 1. 노드의 우선순위 계산 (BFS)
     node_priorities = {}
-    queue = [(None, 1)]
+    queue = [(None, 0)]  # Root부터 시작
 
     while queue:
         current_node, priority = queue.pop(0)
@@ -799,12 +827,16 @@ def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=
 
         node_priorities[current_node] = priority
 
-        # current_node를 edge로 가지는 child 노드들 찾기
+        # current_node를 edge로 참조하는 child 노드들 찾기
         for name, node in exp.nodes.items():
-            if name is not None and name not in node_priorities and name == current_node:
-                queue.append((name, priority + 1))
+            if name is not None and name not in node_priorities:
+                # 이 노드의 edges를 확인해서 current_node를 참조하는지 체크
+                for edge_name, _ in node.edges:
+                    if edge_name == current_node:
+                        queue.append((name, priority + 1))
+                        break
 
-    # 우선순위 순으로 노드 정렬
+    # 우선순위 순으로 노드 정렬 (Root 제외)
     sorted_nodes = sorted(
         [(name, node) for name, node in exp.nodes.items() if name is not None],
         key=lambda x: node_priorities.get(x[0], float('inf'))
@@ -816,14 +848,14 @@ def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=
             org = orig_node.org_attr
             new_exp.set_node(
                 name,
-                grp=orig_node.grp_name,
+                grp=orig_node.grp.name,
                 processor=org['processor'],
-                edges=org['edges'][:] if isinstance(org['edges'], list) else org['edges'],
+                edges=org['edges'][:] if isinstance(org['edges'], list) else [org['edges']] if org['edges'] else [],
                 X=org['X'],
                 y=org['y'],
                 method=org['method'],
                 adapter=org['adapter'],
-                params=org['params'].copy()
+                params=org['params'].copy() if org['params'] else {}
             )
 
     print(f"   └─ Cloned {len(sorted_nodes)} node(s)")
