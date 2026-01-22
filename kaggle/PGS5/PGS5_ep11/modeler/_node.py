@@ -6,8 +6,8 @@ import pandas as pd
 
 class NodeGroup():
     def __init__(
-        self, experimenter, name, processor = None, edges = list(), X = None, y = None, 
-        method = 'transform', role = 'pipe', parent_grp = None, adapter = 'default', params = None
+        self, experimenter, name, processor = None, edges = list(), X = None, y = None,
+        method = 'transform', parent_grp = None, adapter = 'default', params = None
     ):
         self.experimenter = experimenter
         self.name = name
@@ -18,14 +18,6 @@ class NodeGroup():
         self.method = method
         self.params = params if params is not None else {}
         self.nodes = []
-        if role is not None and parent_grp is not None:
-            raise ValueError("Cannot assign role if parent_grp is assigned")
-        elif role is None and parent_grp is None:
-            raise ValueError("Sholud assign role if parent_grp is not assigned")
-        elif parent_grp is not None:
-            self.role = parent_grp.role
-        else:
-            self.role = role
         self.parent_grp = parent_grp
         self.child_grps = []
         self.adapter = adapter

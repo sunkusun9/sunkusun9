@@ -131,14 +131,14 @@ class Experimenter():
 
         print("✅ Rebuild complete!")
     
-    def add_grp(self, name, processor = None, edges = list(), X = None, y = None, method = None, role = None, parent_grp = None, adapter = 'default', params = None):
+    def add_grp(self, name, processor = None, edges = list(), X = None, y = None, method = None, parent_grp = None, adapter = 'default', params = None):
         # parent_grp가 문자열이면 grps에서 찾기
         if parent_grp is not None:
             if parent_grp not in self.grps:
                 raise ValueError(f"Parent group '{parent_grp}' not found")
             parent_grp = self.grps.get(parent_grp)
         # NodeGroup 생성
-        grp = NodeGroup(self, name, processor=processor, edges=edges, X=X, y=y, method=method, role=role, parent_grp=parent_grp, adapter=adapter, params=params)
+        grp = NodeGroup(self, name, processor=processor, edges=edges, X=X, y=y, method=method, parent_grp=parent_grp, adapter=adapter, params=params)
 
         # parent의 child_grps에 추가
         if parent_grp is not None:
@@ -149,7 +149,7 @@ class Experimenter():
 
         return grp
 
-    def set_grp(self, name, processor = None, edges = None, X = None, y = None, method = None, role = None, parent_grp = None, adapter = 'default', params = None):
+    def set_grp(self, name, processor = None, edges = None, X = None, y = None, method = None, parent_grp = None, adapter = 'default', params = None):
         if name not in self.grps:
             print(f"⚠️  Group '{name}' not found")
             return
@@ -168,25 +168,15 @@ class Experimenter():
                 new_parent = parent_grp
 
             # 이전 parent_grp와 다른 경우
-            if grp.parent_grp is None:
-                if grp.parent_grp != new_parent:
-                    if grp.parent_grp.role != new_parent.role:
-                        raise  "The role of parent should be equal"
-                    # 이전 parent의 child_grps에서 제거
-                    if grp.parent_grp is not None:
-                        grp.parent_grp.child_grps.remove(grp)
+            if grp.parent_grp != new_parent:
+                # 이전 parent의 child_grps에서 제거
+                if grp.parent_grp is not None:
+                    grp.parent_grp.child_grps.remove(grp)
 
-                    # 새로운 parent의 child_grps에 추가
-                    grp.parent_grp = new_parent
-                    if new_parent is not None:
-                        new_parent.child_grps.append(grp)
-            else:
-                if new_parent is None:
-                    if grp.role != role:
-                        raise  "The role should be equal"
-                else:
-                    if grp.role != new_parent.role:
-                        raise  "The role should be equal"
+                # 새로운 parent의 child_grps에 추가
+                grp.parent_grp = new_parent
+                if new_parent is not None:
+                    new_parent.child_grps.append(grp)
 
         # 그룹 속성 업데이트
         if processor is not None:
@@ -448,41 +438,26 @@ class Experimenter():
         self.nodes[name] = node
         return node
 
-    def build_pipeline(self, rebuild = False):
-        node_of_rootgrp = list()
-        for grp in self.grps.values():
-            if grp.parent_grp is None and grp.role == 'pipe':
-                node_of_rootgrp.extend(grp.nodes)
-        nodes = [i for i in self._get_effected_nodes(node_of_rootgrp) if i.grp.role == 'pipe' and (i.status is None or rebuild)]
-        print(f"🔄 Building {len(nodes)} node(s)")
-        for node in nodes:
+    def build(self, nodes = None, rebuild = False):
+        if nodes is None:
+            # 기존 동작: 모든 root group의 노드
+            node_names = list(self.nodes.keys())
+        elif isinstance(nodes, list):
+            node_names = [n for n in nodes if n in self.nodes]
+        elif isinstance(nodes, str):
+            pat = re.compile(nodes)
+            node_names = [k for k in self.nodes.keys() if k is not None and pat.search(k)]
+        else:
+            raise ValueError(f"nodes must be None, list, or str, got {type(nodes)}")
+        target_nodes = [i for i in self._get_effected_nodes([None]) if type(i) != RootNode and (i.name in node_names and (i.status is None or rebuild))]
+        print(f"🔄 Building {len(target_nodes)} node(s)")
+        for node in target_nodes:
             node.start_incremental_build()
         for i in range(self.get_n_splits()):
-            for node in nodes:
+            for node in target_nodes:
                 print(f"  ├─ Building '{node.name}'...")
                 node.build_idx(i)
         print("✅ Build complete!")
-    
-    def build_experiment(self, node_str, reexec = False):
-        pat = re.compile(node_str)
-        nodes = [v for k, v in self.nodes.items() if k is not None and pat.match(k) is not None and (v.status is None or reexec)]
-        nodes = [i for i in nodes if i.grp.role == 'exp']
-        print(f"🔄 Building {len(nodes)} node(s)")
-        for node in nodes:
-            node.start_incremental_build()
-        for i in range(self.get_n_splits()):
-            for node in nodes:
-                print(f"  ├─ Building '{node.name}'...")
-                node.build_idx(i)
-        print("✅ Build complete!")
-
-    def experiment_grp(self, grp):
-        if node_name not in self.nodes:
-            raise ValueError(f"{node_name} not found")
-        node = self.nodes[node_name]
-        if node.grp.role != "exp":
-            raise ValueError(f"{node_name} is not Experimentation")
-        node.build()
     
     def get_data(self, idx, edges):
         def ret_data_func(data_list):
@@ -775,33 +750,17 @@ def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=
 
     def clone_group_recursive(orig_grp, parent_grp_name=None):
         """그룹을 재귀적으로 복제"""
-        # 최상위 그룹일 때는 role 전달, 아니면 parent_grp에서 상속
-        if parent_grp_name is None:
-            new_grp = new_exp.add_grp(
-                name=orig_grp.name,
-                processor=orig_grp.processor,
-                edges=orig_grp.edges[:],  # 리스트 복사
-                X=orig_grp.X,
-                y=orig_grp.y,
-                method=orig_grp.method,
-                role=orig_grp.role,  # 최상위 그룹은 role 전달
-                parent_grp=None,
-                adapter=orig_grp.adapter,
-                params=orig_grp.params.copy() if orig_grp.params else {}
-            )
-        else:
-            new_grp = new_exp.add_grp(
-                name=orig_grp.name,
-                processor=orig_grp.processor,
-                edges=orig_grp.edges[:],  # 리스트 복사
-                X=orig_grp.X,
-                y=orig_grp.y,
-                method=orig_grp.method,
-                role=None,  # 자식 그룹은 parent_grp에서 role 상속
-                parent_grp=parent_grp_name,
-                adapter=orig_grp.adapter,
-                params=orig_grp.params.copy() if orig_grp.params else {}
-            )
+        new_grp = new_exp.add_grp(
+            name=orig_grp.name,
+            processor=orig_grp.processor,
+            edges=orig_grp.edges[:],  # 리스트 복사
+            X=orig_grp.X,
+            y=orig_grp.y,
+            method=orig_grp.method,
+            parent_grp=parent_grp_name,
+            adapter=orig_grp.adapter,
+            params=orig_grp.params.copy() if orig_grp.params else {}
+        )
         grp_mapping[orig_grp.name] = new_grp
 
         # 자식 그룹들도 복제
