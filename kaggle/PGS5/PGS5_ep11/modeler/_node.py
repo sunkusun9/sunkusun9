@@ -1,16 +1,20 @@
 import uuid
+import pickle as pkl
 from .adapter import get_adapter
 from ._node_processor import TransformProcessor, PredictProcessor, resolve_columns
 import numpy as np
 import pandas as pd
+import os
+import shutil
 
 class NodeGroup():
     def __init__(
-        self, experimenter, name, processor = None, edges = list(), X = None, y = None,
+        self, experimenter, name, role, processor = None, edges = list(), X = None, y = None,
         method = 'transform', parent_grp = None, adapter = 'default', params = None
     ):
         self.experimenter = experimenter
         self.name = name
+        self.role = role
         self.processor = processor
         self.edges = edges if isinstance(edges, list) else [edges]
         self.X = X
@@ -21,6 +25,21 @@ class NodeGroup():
         self.parent_grp = parent_grp
         self.child_grps = []
         self.adapter = adapter
+
+    @property
+    def path(self):
+        """그룹의 디렉터리 경로 (Experimenter.path 기준)"""
+        if self.experimenter.path is None:
+            return None
+
+        # 부모 그룹 경로 수집
+        path_parts = [self.name]
+        current = self.parent_grp
+        while current is not None:
+            path_parts.insert(0, current.name)
+            current = current.parent_grp
+
+        return self.experimenter.path / '/'.join(path_parts)
 
     def get_attrs(self):
         attrs = {}
@@ -64,6 +83,7 @@ class Node():
         self.X = X
         self.y = y
         self.use_cache = use_cache
+        self.output_edges = []  # 이 노드를 입력으로 사용하는 노드들의 이름
         # adapter 인스턴스 가져오기
         if adapter == 'default':
             self.adapter_ = get_adapter(self.processor)
@@ -91,19 +111,28 @@ class Node():
             raise ValueError(f"Unknown processor_type: {self.method}")
         self.status = "built"
 
-    def start_incremental_build(self):
+    def start_build(self):
         self.initialize()
         self.objs_ = list()
     
     def build_idx(self, idx):
         if idx != len(self.objs_):
             raise RuntimeError(f"{self.name}: Build sequence is not valid")
-        if self.method in ['transform', 'predict', 'predict_proba']:
-            self.objs_.append(self._build_obj(self.experimenter.get_data(idx, self.edges), False))
-        elif self.method in ['fit_transform', 'fit_predict']:
-            self.objs_.append(self._build_obj(self.experimenter.get_data(idx, self.edges), True))
+
+        filename = self.path / ('b' + str(idx) + '.pkl')
+        if os.path.isfile(filename):
+            with open(filename, 'rb') as f:
+                bobj = pkl.load(f)
         else:
-            raise ValueError(f"Unknown processor_type: {self.method}")
+            if self.method in ['transform', 'predict', 'predict_proba']:
+                bobj = self._build_obj(self.experimenter.get_data(idx, self.edges), False)
+            elif self.method in ['fit_transform', 'fit_predict']:
+                bobj = self._build_obj(self.experimenter.get_data(idx, self.edges), True)
+            else:
+                raise ValueError(f"Unknown processor_type: {self.method}")
+            with open(filename, 'wb') as f:
+                pkl.dump(bobj, f)
+        self.objs_.append(bobj)
         self.status = "built"
 
     def _build_sub(self, train_t, train_v, fit_process):
@@ -136,46 +165,93 @@ class Node():
             sub.append(self._build_sub(train_t, train_v, fit_process))
         return sub
 
-    def get_result_idx(self, idx, result):
-        ret = list()       
-        for no, (i, _, _) in enumerate(self.objs_[idx]):
-            r = self.adapter_.get_result(i, result)
-            if result == 'metric':
-                pass
-            elif result == 'stacking':
-                pass
-            elif type(r) in [pd.Series, pd.DataFrame]:
-                ret.append(
-                    r.T.set_index(pd.MultiIndex.from_product([[idx], [no], r.columns])).T
-                )
-            else:
-                ret.append(r)
-        if type(ret[0]) in [pd.Series, pd.DataFrame]:
-            return pd.concat(ret, axis = 1)
-        return ret
-
-    def get_result(self, result):
+    def _experiment(self, idx, results):
         ret = list()
-        for idx in range(self.experimenter.get_n_splits()):
-            r = self.get_result_idx(idx, result)
-            ret.append(r)
-        if type(ret[0]) in [pd.Series, pd.DataFrame]:
-            return pd.concat(ret, axis = 1)
-        return ret
-    
-    def finalize(self):
-        self._unload_cache()
-        if self.status != "built":
-            raise RuntimeError("Not built")
-        for i, o_list in enumerate(self.objs_):
-            o_list_new  = list()
-            for obj in o_list: 
-                del obj[0]
-                o_list_new.append((None, None, obj[2]))
-            self.objs_[i] = o_list_new
-        self.status = "finalized"
+        it = self.experimenter.get_data(idx, self.edges)
+        if self.method in ['transform', 'predict', 'predict_proba']:
+            objs = self._build_obj(it, False)
+        elif self.method in ['fit_transform', 'fit_predict']:
+            objs = self._build_obj(it, True)
 
+        it = self.experimenter.get_data(idx, self.edges)
+        result_list = list()
+        for ((train_t, train_v), valid), (obj, train_, spec) in zip(it, objs):
+            sub_result = {'spec': spec}
+            for result in results:
+                if result == 'object':
+                    sub_result['object'] = obj.obj
+                elif result in ['output', 'output_train', 'output_valid']:
+                    if result in ['output', 'output_train']:
+                        if train_ is None:
+                            train_result = obj.process(train_t)
+                        else:
+                            train_result = train_
+                        if train_v is not None:
+                            train_v_result = obj.process(train_v)
+                        sub_result['output_train'] = (train_result, train_v_result)
+                    if result in ['output', 'output_valid']:
+                        sub_result['output_valid'] = obj.process(valid)
+                else:
+                    sub_result[result] = self.adapter_.get_result(obj, result)
+            result_list.append(sub_result)
+        return result_list
+    
+    def adhoc(self, results):
+        for i in range(self.e.get_n_splits()):
+            yield self._experiment(i, results)
+
+    def adhoc_idx(self, idx, results):
+        return self._experiment(idx, results)
+
+    def experiment(self, idx, results):
+        if self.grp.role == 'pipe':
+            raise RuntimeError("pipe cannot be experiment target")
+        if 'object' in results:
+            raise ValueError("experiment cannot include 'object'. Use adhoc instead")
+        filename = self.path / ('exp' + str(idx) + '.pkl')
+        if os.path.isfile(filename):
+            with open(filename, 'rb') as f:
+                return pkl.load(f)
+        else:
+            exp_result = self._experiment(idx, results)
+            with open(filename, 'wb') as f:
+                pkl.dump(exp_result, f)
+            return exp_result
+    
+    def shrink_result(self, idx):
+        filename = self.path / ('exp' + str(idx) + '.pkl')
+        if not os.path.isfile(filename):
+            return False
+
+        with open(filename, 'rb') as f:
+            exp_result = pkl.load(f)
+
+        modified = False
+        for sub_result in exp_result:
+            for key in ['output', 'output_train', 'output_valid']:
+                if key in sub_result:
+                    del sub_result[key]
+                    modified = True
+
+        if modified:
+            with open(filename, 'wb') as f:
+                pkl.dump(exp_result, f)
+
+        return modified
+
+    @property
+    def path(self):
+        return self.grp.path / self.name
+
+    def remove(self):
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        
     def initialize(self):
+        path = self.path
+        if os.path.isdir(path):
+            shutil.rmtree(path)
+        os.makedirs(path, exist_ok = True)
         self._unload_cache()
         self.status = None
         self.objs_ = None
@@ -346,6 +422,7 @@ class RootNode():
     def __init__(self, experimenter, data):
         self.experimenter = experimenter
         self.data = data
+        self.output_edges = []  # 이 노드를 입력으로 사용하는 노드들의 이름
 
     def get_data(self, idx, v=None):
         outer_valid_data = self.data.iloc(self.experimenter.valid_idx_list[idx])

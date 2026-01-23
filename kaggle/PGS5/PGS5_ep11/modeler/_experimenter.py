@@ -1,6 +1,9 @@
 import re
+import os
 import uuid
 import pickle as pkl
+import shutil
+from pathlib import Path
 from sklearn.model_selection import ShuffleSplit
 
 from ._data_wrapper import wrap, unwrap
@@ -8,7 +11,7 @@ from ._node import NodeGroup, Node, RootNode
 from ._describer import desc_spec, desc_pipeline, desc_node, desc_node_vars
 
 class Experimenter():
-    def __init__(self, data, data_names=None, sp=ShuffleSplit(n_splits=1, random_state=1), sp_v=None, splitter_params=None, title=None, stacking =  None):
+    def __init__(self, data, path, data_names=None, sp=ShuffleSplit(n_splits=1, random_state=1), sp_v=None, splitter_params=None, title=None, stacking=None):
         self.train_idx_list = list()
         self.valid_idx_list = list()
         data_native = data
@@ -17,6 +20,12 @@ class Experimenter():
 
         # 실험 타이틀 저장
         self.title = title
+
+        
+        self.path = Path(path)
+        if not self.path.exists():
+            self.path.mkdir(parents=True, exist_ok=True)
+            print(f"📁 Created directory: {self.path}")
 
         # splitter 설정 저장
         self.sp = sp
@@ -58,25 +67,24 @@ class Experimenter():
         return len(self.train_idx_list)
     
     def _find_descendants(self, node_name):
-        """특정 노드에 의존하는 모든 하위 노드들을 찾음 (BFS)"""
+        """특정 노드에 의존하는 모든 하위 노드들을 찾음 (BFS)
+
+        output_edges를 활용하여 효율적으로 탐색
+        """
         descendants = set()
         queue = [node_name]
 
         while queue:
             current = queue.pop(0)
 
-            # 현재 노드에 의존하는 노드들 찾기
-            for name, node in self.nodes.items():
-                if name is None or name in descendants:
-                    continue
+            if current not in self.nodes:
+                continue
 
-                # 이 노드의 edges를 확인
-                if hasattr(node, 'edges'):
-                    for edge_name, _ in node.edges:
-                        if edge_name == current:
-                            descendants.add(name)
-                            queue.append(name)
-                            break
+            # output_edges: 이 노드를 입력으로 사용하는 노드 이름 리스트
+            for child_name in self.nodes[current].output_edges:
+                if child_name not in descendants:
+                    descendants.add(child_name)
+                    queue.append(child_name)
 
         return descendants
 
@@ -124,21 +132,46 @@ class Experimenter():
         print(f"🔄 Rebuilding nodes: {nodes_to_rebuild}")
 
         # 토폴로지컬 순서로 재빌드 (의존하는 순서대로)
-        for name in nodes_to_rebuild:
-            if name in self.nodes and hasattr(self.nodes[name], 'build'):
-                print(f"  ├─ Rebuilding '{name}'...")
-                self.nodes[name].build()
-
+        for node in nodes_to_rebuild:
+            node.start_build()
+        for i in range(self.get_n_splits()):
+            for node in nodes_to_rebuild:
+                print(f"  ├─ Rebuilding '{node.name}'...")
+                node.build_idx(i)
         print("✅ Rebuild complete!")
     
-    def add_grp(self, name, processor = None, edges = list(), X = None, y = None, method = None, parent_grp = None, adapter = 'default', params = None):
+    def _check_edges(self, edges):
+        if edges is None:
+            return False
+        for name, _ in edges:
+            if name is None:
+                continue
+            if name not in self.nodes:
+                raise ValueError("")
+            if self.nodes[name].grp.role != 'pipe':
+                raise ValueError("")
+        return True
+
+    def add_grp(self, name, role = None, processor=None, edges=list(), X=None, y=None, method=None, parent_grp=None, adapter='default', params=None):
+        if name in self.nodes:
+            raise ValueError("")
+
+        if name in self.grps:
+            raise ValueError("")
+
         # parent_grp가 문자열이면 grps에서 찾기
         if parent_grp is not None:
             if parent_grp not in self.grps:
                 raise ValueError(f"Parent group '{parent_grp}' not found")
             parent_grp = self.grps.get(parent_grp)
+            if role is None:
+                role = parent_grp.role
+        if role not in ['pipe', 'exp']:
+            raise ValueError("")
+        
+        self._check_edges(edges)
         # NodeGroup 생성
-        grp = NodeGroup(self, name, processor=processor, edges=edges, X=X, y=y, method=method, parent_grp=parent_grp, adapter=adapter, params=params)
+        grp = NodeGroup(self, name, role, processor=processor, edges=edges, X=X, y=y, method=method, parent_grp=parent_grp, adapter=adapter, params=params)
 
         # parent의 child_grps에 추가
         if parent_grp is not None:
@@ -147,36 +180,107 @@ class Experimenter():
         # grps 딕셔너리에 등록
         self.grps[name] = grp
 
+        # 디렉터리 생성
+        if grp.path is not None and not grp.path.exists():
+            grp.path.mkdir(parents=True, exist_ok=True)
+
         return grp
 
-    def set_grp(self, name, processor = None, edges = None, X = None, y = None, method = None, parent_grp = None, adapter = 'default', params = None):
+    def _get_all_nodes_in_grp(self, grp):
+        """그룹과 하위 그룹의 모든 노드 이름을 수집"""
+        result = list(grp.nodes)
+        for child_grp in grp.child_grps:
+            result.extend(self._get_all_nodes_in_grp(child_grp))
+        return result
+
+    def _compute_node_edges(self, node_name, new_grp_edges=None):
+        """노드의 최종 edges 계산 (그룹 상속 포함)
+
+        Args:
+            node_name: 노드 이름
+            new_grp_edges: 새로 적용할 그룹 edges (None이면 현재 그룹 attrs 사용)
+        """
+        if node_name not in self.nodes:
+            return []
+
+        node = self.nodes[node_name]
+        node_own_edges = list(node.org_attr['edges']) if node.org_attr and node.org_attr['edges'] else []
+
+        if new_grp_edges is not None:
+            # 새 그룹 edges + 노드 자체 edges
+            return new_grp_edges + node_own_edges
+        else:
+            # 현재 그룹 attrs에서 edges 가져오기
+            grp_attrs = node.grp.get_attrs() if node.grp else {}
+            grp_edges = grp_attrs.get('edges', [])
+            return grp_edges + node_own_edges
+
+    def set_grp(self, name, processor=None, edges=None, X=None, y=None, method=None, parent_grp=None, adapter=None, params=None):
+        # 1. 그룹 존재 확인
         if name not in self.grps:
-            print(f"⚠️  Group '{name}' not found")
-            return
-
+            raise ValueError(f"Group '{name}' not found")
+        self._check_edges(edges)
         grp = self.grps[name]
-
-        # parent_grp 변경 처리
+        old_grp_path = grp.path
+        # 2. parent_grp 유효성 검증
+        new_parent = None
         if parent_grp is not None:
-            # parent_grp가 문자열이면 grps에서 찾기
             if isinstance(parent_grp, str):
-                new_parent = self.grps.get(parent_grp, None)
-                if new_parent is None:
-                    print(f"⚠️  Parent group '{parent_grp}' not found")
-                    return
+                if parent_grp not in self.grps:
+                    raise ValueError(f"Parent group '{parent_grp}' not found")
+                new_parent = self.grps[parent_grp]
             else:
                 new_parent = parent_grp
 
-            # 이전 parent_grp와 다른 경우
-            if grp.parent_grp != new_parent:
-                # 이전 parent의 child_grps에서 제거
-                if grp.parent_grp is not None:
-                    grp.parent_grp.child_grps.remove(grp)
+        # 3. edges 변경 시 순환 구조 체크 (변경 전 검증)
+        if edges is not None:
+            new_edges = edges if isinstance(edges, list) else [edges]
 
-                # 새로운 parent의 child_grps에 추가
-                grp.parent_grp = new_parent
-                if new_parent is not None:
-                    new_parent.child_grps.append(grp)
+            # 이 그룹과 하위 그룹의 모든 노드 수집
+            all_affected_nodes = self._get_all_nodes_in_grp(grp)
+
+            # 각 노드에 대해 새 edges로 순환 구조 체크
+            for node_name in all_affected_nodes:
+                if node_name not in self.nodes:
+                    continue
+
+                node = self.nodes[node_name]
+                # 노드의 그룹 계층에서 현재 grp의 위치를 고려하여 최종 edges 계산
+                # 부모 그룹의 edges + 새 edges + 자식 그룹의 edges + 노드 자체 edges
+                node_own_edges = list(node.org_attr['edges']) if node.org_attr and node.org_attr['edges'] else []
+
+                # 그룹 계층에서 edges 수집 (현재 grp는 new_edges로 대체)
+                grp_edges = []
+                current_grp = node.grp
+                while current_grp is not None:
+                    if current_grp.name == name:
+                        # 변경 대상 그룹: 새 edges 사용
+                        grp_edges = new_edges + grp_edges
+                    else:
+                        grp_edges = current_grp.edges + grp_edges
+                    current_grp = current_grp.parent_grp
+
+                final_edges = grp_edges + node_own_edges
+
+                # 사이클 체크
+                has_cycle, cycle_edges = self._check_cycle(node_name, final_edges)
+                if has_cycle:
+                    cycle_info = ", ".join([f"'{e}'" for e in cycle_edges])
+                    raise ValueError(f"Cannot update group '{name}': node '{node_name}' would create cycle through edge(s) {cycle_info}")
+
+        # 4. 검증 통과 - 실제 변경 수행
+
+        # parent_grp 변경 처리
+        parent_changed = False
+        if parent_grp is not None and grp.parent_grp != new_parent:
+            parent_changed = True
+            # 이전 parent의 child_grps에서 제거
+            if grp.parent_grp is not None:
+                grp.parent_grp.child_grps.remove(grp)
+            # 새로운 parent의 child_grps에 추가
+            grp.parent_grp = new_parent
+            if new_parent is not None:
+                new_parent.child_grps.append(grp)
 
         # 그룹 속성 업데이트
         if processor is not None:
@@ -194,33 +298,55 @@ class Experimenter():
         if params is not None:
             grp.params.update(params)
 
-        # 그룹에 속한 노드들 찾기
-        if len(grp.nodes) == 0:
+        # parent 변경 시 디렉터리 구조 업데이트
+        if parent_changed:
+            self._ensure_grp_directories(grp)
+
+        # 5. 영향받는 노드들 초기화
+        all_affected_nodes = self._get_all_nodes_in_grp(grp)
+        if len(all_affected_nodes) == 0:
             print(f"✅ Group '{name}' updated (no nodes to rebuild)")
-            return
+            return grp
+        
+        node_to_initialize = self._get_effected_nodes(all_affected_nodes)
+        for node in node_to_initialize:
+            node.initialize()
 
-        # edges가 업데이트된 경우, 그룹에 속한 노드들의 사이클 체크
-        if edges is not None:
-            for node_name in grp.nodes:
-                if node_name in self.nodes:
-                    node = self.nodes[node_name]
-                    # 노드의 최종 edges 계산 (그룹 edges + 노드 자체 edges)
-                    node_edges = list(node.org_attr['edges']) if node.org_attr else []
-                    final_edges = grp.edges + node_edges
+        new_grp_path = grp.path
+        if old_grp_path != new_grp_path:
+            os.makedirs(dst_dir, exist_ok=True)
+            for name in os.listdir(old_grp_path):
+                src_path = os.path.join(old_grp_path, name)
+                dst_path = os.path.join(dst_dir, name)
+                shutil.move(src_path, dst_path)
+        
+        print(f"✅ Group '{name}' updated, {len(node_to_initialize)} node(s) affected")
+        return grp
 
-                    # 사이클 체크
-                    has_cycle, cycle_edges = self._check_cycle(node_name, final_edges)
-                    if has_cycle:
-                        cycle_info = ", ".join([f"'{e}'" for e in cycle_edges])
-                        raise ValueError(f"Cannot update group '{name}': node '{node_name}' would create cycle through edge(s) {cycle_info}")
-
-            print(f"✅ Cycle check passed for all nodes in group '{name}'")
-        node_to_initialize = self._get_effected_nodes(grp.nodes)
-        for i in node_to_initialize:
-            i.initialize()
-
-        print(f"{len(node_to_initialize)} node(s) affected by group '{name}' update")
-
+    def rename_grp(self, name_from, name_to):
+        if name_from not in self.grps:
+            raise ValueError("")
+        if name_to in self.grps:
+            raise ValueError("")
+            
+        grp = self.grps[name_from]
+        old_grp_path = grp.path
+        grp.name = name_to
+        if grp.parent_grp is not None:
+            # 이전 parent의 child_grps에서 제거
+            if grp.parent_grp is not None:
+                grp.parent_grp.child_grps.remove(name_from)
+                grp.parent_grp.child_grps.append(name_to)
+        new_grp_path = grp.path
+        os.makedirs(new_grp_path, exist_ok=True)
+        for name in os.listdir(old_grp_path):
+            src_path = os.path.join(old_grp_path, name)
+            dst_path = os.path.join(new_grp_path, name)
+            shutil.move(src_path, dst_path)
+        shutil.rmtree(old_grp_path)
+        del self.grps[name_from]
+        self.grps[name_to] = grp
+        
     def _get_effected_nodes(self, nodes):
         # 우선순위 알고리즘: BFS로 노드들의 빌드 우선순위 결정
         priorities = {}
@@ -331,25 +457,66 @@ class Experimenter():
             descendants_list = sorted(descendants)
             raise ValueError(f"Cannot remove node '{name}': has {len(descendants)} dependent node(s): {descendants_list}")
 
-        # 그룹에 속해있으면 그룹의 nodes 리스트에서 제거
         node = self.nodes[name]
-        if node.grp_name is not None and node.grp_name in self.grps:
-            grp = self.grps[node.grp_name]
+
+        # output_edges 무결성 유지: 부모 노드들의 output_edges에서 제거
+        self._update_output_edges(name, node.edges, None)
+
+        # 그룹에 속해있으면 그룹의 nodes 리스트에서 제거
+        grp_name = node.grp.name if node.grp is not None else None
+        if grp_name is not None and grp_name in self.grps:
+            grp = self.grps[grp_name]
             if name in grp.nodes:
                 grp.nodes.remove(name)
-                print(f"  ├─ Removed '{name}' from group '{node.grp_name}'")
+                print(f"  ├─ Removed '{name}' from group '{grp_name}'")
 
+        node.remove()
         # nodes 딕셔너리에서 제거
         del self.nodes[name]
 
         print(f"✅ Node '{name}' removed")
 
+    def _update_output_edges(self, node_name, old_edges, new_edges):
+        """output_edges 무결성 유지
+
+        Args:
+            node_name: 현재 노드 이름
+            old_edges: 이전 edges 리스트 (None이면 제거만 스킵)
+            new_edges: 새 edges 리스트 (None이면 추가만 스킵)
+        """
+        # 이전 edges에서 현재 노드 제거
+        if old_edges is not None:
+            for edge_name, _ in old_edges:
+                if edge_name in self.nodes:
+                    parent_node = self.nodes[edge_name]
+                    if node_name in parent_node.output_edges:
+                        parent_node.output_edges.remove(node_name)
+
+        # 새 edges에 현재 노드 추가
+        if new_edges is not None:
+            for edge_name, _ in new_edges:
+                if edge_name in self.nodes:
+                    parent_node = self.nodes[edge_name]
+                    if node_name not in parent_node.output_edges:
+                        parent_node.output_edges.append(node_name)
+
     def set_node(
-        self, name, grp, processor = None, edges = list(), X = None, y = None, 
+        self, name, grp, processor = None, edges = list(), X = None, y = None,
         method = None, adapter = 'default', params = None
     ):
+        if name in self.grps:
+            raise ValueError("")
+
+        if grp not in self.grps:
+            raise ValueError("")
+        
+        self._check_edges(edges)
+
         # 기존 노드가 있는지 확인
         is_update = name in self.nodes
+        old_edges = None
+        if is_update:
+            old_edges = self.nodes[name].edges
 
         # params 기본값 처리
         if params is None:
@@ -410,6 +577,9 @@ class Experimenter():
             cycle_info = ", ".join([f"'{e}'" for e in cycle_edges])
             raise ValueError(f"Cannot add node '{name}': would create cycle through edge(s) {cycle_info}")
 
+        # output_edges 무결성 업데이트
+        self._update_output_edges(name, old_edges, edges)
+
         node = Node(self, name, processor, edges, X = X, y = y, method = method, grp = grp_obj, adapter = adapter, org_attr = org_attr, params = merged_params)
         # grp에 노드 추가
         if grp_obj is not None:
@@ -449,16 +619,40 @@ class Experimenter():
             node_names = [k for k in self.nodes.keys() if k is not None and pat.search(k)]
         else:
             raise ValueError(f"nodes must be None, list, or str, got {type(nodes)}")
-        target_nodes = [i for i in self._get_effected_nodes([None]) if type(i) != RootNode and (i.name in node_names and (i.status is None or rebuild))]
+        target_nodes = [
+            i for i in self._get_effected_nodes([None]) if type(i) != RootNode and i.grp.role == 'pipe' and (i.name in node_names and (i.status is None or rebuild))
+        ]
         print(f"🔄 Building {len(target_nodes)} node(s)")
         for node in target_nodes:
-            node.start_incremental_build()
+            node.start_build()
         for i in range(self.get_n_splits()):
             for node in target_nodes:
                 print(f"  ├─ Building '{node.name}'...")
                 node.build_idx(i)
         print("✅ Build complete!")
     
+    def exp(self, nodes = None, retry = False):
+        if nodes is None:
+            # 기존 동작: 모든 root group의 노드
+            node_names = list(self.nodes.keys())
+        elif isinstance(nodes, list):
+            node_names = [n for n in nodes if n in self.nodes]
+        elif isinstance(nodes, str):
+            pat = re.compile(nodes)
+            node_names = [k for k in self.nodes.keys() if k is not None and pat.search(k)]
+        else:
+            raise ValueError(f"nodes must be None, list, or str, got {type(nodes)}")
+        target_nodes = [
+            i for i in self._get_effected_nodes([None]) if type(i) != RootNode and i.grp.role == 'exp' and (i.name in node_names and (i.status is None or retry))
+        ]
+        print(f"🔄 Experimenting {len(target_nodes)} node(s)")
+        for i in range(self.get_n_splits()):
+            print(f"{i} fold")
+            for node in target_nodes:
+                print(f"  ├─ Experimenting '{node.name}'...")
+                node.experiment(i, ['output'])
+        print("✅ Experimentation complete!")
+
     def get_data(self, idx, edges):
         def ret_data_func(data_list):
             for z in zip(*data_list):
@@ -700,7 +894,7 @@ class Experimenter():
 
         return exp
 
-def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=None, title=None, stacking=None):
+def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=None, title=None, stacking=None, path=None):
     """기존 Experimenter의 구조를 복제하여 새로운 Experimenter 생성
 
     Args:
@@ -712,6 +906,7 @@ def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=
         splitter_params: splitter에 전달할 파라미터 (None이면 원본과 동일)
         title: 실험 타이틀 (None이면 원본과 동일)
         stacking: stacking 설정 (None이면 원본과 동일)
+        path: 작업 디렉토리 경로 (None이면 원본과 동일)
 
     Returns:
         Experimenter: 새로 생성된 Experimenter 인스턴스
@@ -728,6 +923,8 @@ def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=
         title = exp.title
     if stacking is None:
         stacking = exp.stacking
+    if path is None:
+        path = exp.path
 
     # 새 Experimenter 생성
     new_exp = Experimenter(
@@ -737,7 +934,8 @@ def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=
         sp_v=sp_v,
         splitter_params=splitter_params,
         title=title,
-        stacking=stacking
+        stacking=stacking,
+        path=path
     )
     print(f"   ├─ Created base Experimenter with {len(new_exp.train_idx_list)} fold(s)")
 
