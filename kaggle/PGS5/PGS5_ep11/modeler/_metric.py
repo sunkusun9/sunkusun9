@@ -1,45 +1,35 @@
 import re
 import pandas as pd
+from ._node_processor import resolve_columns
 
 class Metric:
     def __init__(
-        self, name, e, target_edge, output_var, metric_func, include_train = False
+        self, name, experimenter, target_edges, output_var, metric_func, include_train = False
     ):
-        self.e = e
+        self.experimenter = experimenter
         self.name = name
-        self.target_edge = target_edge
+        self.target_edges = target_edges
         self.output_var = output_var
         self.include_train = include_train
         self.metric_func = metric_func
+        self.metrics = dict()
 
-    def get_metric(self, idx, node):
+    def get_data(self, idx):
+        return list(
+            self.experimenter.get_data(idx, self.target_edges)
+        )
+
+    def get_metric(self, target_data, result_data):
+        (true_train_t, true_train_v), true_valid = target_data
+        selected_cols = resolve_columns(result_data['output_valid'], self.output_var)
+        prd = result_data['output_valid'].select_columns(selected_cols)
+        result = {
+            'valid': self.metric_func(true_valid.data, prd.data)
+        }
         if self.include_train:
-            iterator = zip(
-                self.e.get_node_output(idx, self.target_edge[0], self.target_edge[1]),
-                self.e.get_node_output(idx, node, self.output_var)
-            )
-            for no, ((true_train, true_valid), (prd_train, prd_valid)) in enumerate(iterator):
-                result_train = self.metric_func(true_train[0].data, prd_train[0].data)
-                result_valid = self.metric_func(true_valid.data, prd_valid.data)
-                if true_train[1] is not None:
-                    result_sub = {
-                        (idx, 'train', f'train_{no}'): result_train,
-                        (idx, 'train', f'valid_{no}'): self.metric_func(true_train[1].data, prd_train[1].data),
-                        (idx, 'valid', ''): result_valid
-                    }
-                else:
-                    result_sub = {
-                        (idx, 'train'): result_train, (idx, 'valid'): result_valid
-                    }
-        else:
-            iterator = zip(
-                self.e.get_node_valid_output(idx, self.target_edge[0], self.target_edge[1]),
-                self.e.get_node_valid_output(idx, node, self.output_var)
-            )
-            for true_valid, prd_valid in iterator:
-                result_valid = self.metric_func(true_valid.data, prd_valid.data)
-                result_sub = {idx: result_valid}
-
-        return pd.Series(result_sub)
-
-            
+            prd = result_data['output_train'][0].select_columns(selected_cols)
+            result['train_sub'] = self.metric_func(true_train_t.data, prd.data)
+            if true_train_v is not None:
+                prd = result_data['output_train'][1].select_columns(selected_cols)
+                result['valid_sub'] = self.metric_func(true_train_v.data, prd.data)
+        return result

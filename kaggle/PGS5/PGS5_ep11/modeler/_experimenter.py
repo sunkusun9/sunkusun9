@@ -11,7 +11,7 @@ from ._node import NodeGroup, Node, RootNode
 from ._describer import desc_spec, desc_pipeline, desc_node, desc_node_vars
 
 class Experimenter():
-    def __init__(self, data, path, data_names=None, sp=ShuffleSplit(n_splits=1, random_state=1), sp_v=None, splitter_params=None, title=None, stacking=None):
+    def __init__(self, data, path, data_names=None, sp=ShuffleSplit(n_splits=1, random_state=1), sp_v=None, splitter_params=None, title=None):
         self.train_idx_list = list()
         self.valid_idx_list = list()
         data_native = data
@@ -60,9 +60,10 @@ class Experimenter():
             self.valid_idx_list.append(valid_idx)
         self.nodes = {None: RootNode(self, data)}
         self.grps = {}
-        self.stacking = stacking
+        self.metric = {}
+        self.stacking = {}
         
-
+    
     def get_n_splits(self):
         return len(self.train_idx_list)
     
@@ -916,7 +917,10 @@ def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=
     if sp is None:
         sp = exp.sp
     if sp_v is None:
-        sp_v = exp.sp_v
+        if sp_v == "remove":
+            sp_v = None
+        else:
+            sp_v = exp.sp_v
     if splitter_params is None:
         splitter_params = exp.splitter_params.copy() if exp.splitter_params else None
     if title is None:

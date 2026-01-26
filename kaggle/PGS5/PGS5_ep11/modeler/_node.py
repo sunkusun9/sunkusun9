@@ -165,7 +165,7 @@ class Node():
             sub.append(self._build_sub(train_t, train_v, fit_process))
         return sub
 
-    def _experiment(self, idx, results):
+    def experiment(self, idx, results = ['object', 'output']):
         ret = list()
         it = self.experimenter.get_data(idx, self.edges)
         if self.method in ['transform', 'predict', 'predict_proba']:
@@ -179,7 +179,7 @@ class Node():
             sub_result = {'spec': spec}
             for result in results:
                 if result == 'object':
-                    sub_result['object'] = obj.obj
+                    sub_result['object'] = obj
                 elif result in ['output', 'output_train', 'output_valid']:
                     if result in ['output', 'output_train']:
                         if train_ is None:
@@ -191,53 +191,12 @@ class Node():
                         sub_result['output_train'] = (train_result, train_v_result)
                     if result in ['output', 'output_valid']:
                         sub_result['output_valid'] = obj.process(valid)
-                else:
-                    sub_result[result] = self.adapter_.get_result(obj, result)
-            result_list.append(sub_result)
-        return result_list
-    
-    def adhoc(self, results):
-        for i in range(self.e.get_n_splits()):
-            yield self._experiment(i, results)
+            yield sub_result
 
-    def adhoc_idx(self, idx, results):
-        return self._experiment(idx, results)
-
-    def experiment(self, idx, results):
-        if self.grp.role == 'pipe':
-            raise RuntimeError("pipe cannot be experiment target")
-        if 'object' in results:
-            raise ValueError("experiment cannot include 'object'. Use adhoc instead")
-        filename = self.path / ('exp' + str(idx) + '.pkl')
-        if os.path.isfile(filename):
-            with open(filename, 'rb') as f:
-                return pkl.load(f)
-        else:
-            exp_result = self._experiment(idx, results)
-            with open(filename, 'wb') as f:
-                pkl.dump(exp_result, f)
-            return exp_result
-    
-    def shrink_result(self, idx):
-        filename = self.path / ('exp' + str(idx) + '.pkl')
-        if not os.path.isfile(filename):
-            return False
-
-        with open(filename, 'rb') as f:
-            exp_result = pkl.load(f)
-
-        modified = False
-        for sub_result in exp_result:
-            for key in ['output', 'output_train', 'output_valid']:
-                if key in sub_result:
-                    del sub_result[key]
-                    modified = True
-
-        if modified:
-            with open(filename, 'wb') as f:
-                pkl.dump(exp_result, f)
-
-        return modified
+    def adhoc(self, idx, results):
+        return list(
+            self.experiment(idx, results)
+        )
 
     @property
     def path(self):
@@ -289,8 +248,10 @@ class Node():
         print(f"\r[{self.name}] Built: {total_folds}/{total_folds} (100%) ✓ Complete")
 
     def get_data(self, idx, v = None):
+        if self.grp.role != 'pipe':
+            raise RuntimeError(f"Cannot get_data as {self.name} node is included pipeline group.")
         if self.objs_ is None:
-            raise RuntimeError("f{self.name} is not built")
+            raise RuntimeError(f"{self.name} is not built")
         if self.cache_idx == idx and self.cache_v_param == v and self.cache is not None:
             def ret_func():
                 for i in self.cache:
