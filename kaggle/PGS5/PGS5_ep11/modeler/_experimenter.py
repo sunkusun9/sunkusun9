@@ -62,8 +62,7 @@ class Experimenter():
         self.grps = {}
         self.metric = {}
         self.stacking = {}
-        
-    
+
     def get_n_splits(self):
         return len(self.train_idx_list)
     
@@ -477,6 +476,15 @@ class Experimenter():
 
         print(f"✅ Node '{name}' removed")
 
+    def finalize_node(self, name):
+        if name not in self.nodes:
+            raise ValueError(f"Node '{name}' not found")
+
+        if name is None:
+            raise ValueError("Cannot remove Root node")
+        node = self.nodes[name]
+        node.finalize()
+
     def _update_output_edges(self, node_name, old_edges, new_edges):
         """output_edges 무결성 유지
 
@@ -630,6 +638,9 @@ class Experimenter():
             for node in target_nodes:
                 print(f"  ├─ Building '{node.name}'...")
                 node.build_idx(i)
+        print(f"🔄 Building {len(target_nodes)} node(s)")
+        for node in target_nodes:
+            node.end_build()
         print("✅ Build complete!")
     
     def exp(self, nodes = None, retry = False):
@@ -817,15 +828,11 @@ class Experimenter():
         node = self.nodes[node_name]
 
         # 노드가 빌드되지 않았으면 에러
-        if not hasattr(node, 'objs_') or node.objs_ is None:
+        if node.status is None:
             raise ValueError(f"Node '{node_name}' is not built yet. Please call node.build() first.")
 
-        # idx가 유효한지 확인
-        if idx < 0 or idx >= len(node.objs_):
-            raise ValueError(f"Invalid idx: {idx}. Valid range is 0 to {len(node.objs_) - 1}")
-
         # 외부 fold의 내부 fold들: [(processor, train_v, info), ...]
-        inner_folds = node.objs_[idx]
+        inner_folds = node.get_exp_obj(idx)
 
         # (입력변수 튜플, 출력변수 튜플) -> 내부 fold index 리스트
         var_map = {}

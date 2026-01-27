@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import os
 import shutil
+import time
 
 class NodeGroup():
     def __init__(
@@ -115,24 +116,30 @@ class Node():
         self.initialize()
         self.objs_ = list()
     
+    def _build_idx(self, idx):
+        if self.method in ['transform', 'predict', 'predict_proba']:
+            bobj = self._build_obj(self.experimenter.get_data(idx, self.edges), False)
+        elif self.method in ['fit_transform', 'fit_predict']:
+            bobj = self._build_obj(self.experimenter.get_data(idx, self.edges), True)
+        else:
+            raise ValueError(f"Unknown processor_type: {self.method}")
+        return bobj
+    
     def build_idx(self, idx):
         if idx != len(self.objs_):
             raise RuntimeError(f"{self.name}: Build sequence is not valid")
 
-        filename = self.path / ('b' + str(idx) + '.pkl')
-        if os.path.isfile(filename):
+        filename = self.path / ('obj' + str(idx) + '.pkl')
+        if self.status == "built":
             with open(filename, 'rb') as f:
                 bobj = pkl.load(f)
         else:
-            if self.method in ['transform', 'predict', 'predict_proba']:
-                bobj = self._build_obj(self.experimenter.get_data(idx, self.edges), False)
-            elif self.method in ['fit_transform', 'fit_predict']:
-                bobj = self._build_obj(self.experimenter.get_data(idx, self.edges), True)
-            else:
-                raise ValueError(f"Unknown processor_type: {self.method}")
+            bobj = self._build_idx(idx)
             with open(filename, 'wb') as f:
                 pkl.dump(bobj, f)
         self.objs_.append(bobj)
+
+    def end_build(self):
         self.status = "built"
 
     def _build_sub(self, train_t, train_v, fit_process):
@@ -141,8 +148,6 @@ class Node():
         else:
             obj = PredictProcessor(self, self.processor, X = self.X, y = self.y, method = self.method, adapter = self.adapter_, **self.params)
 
-        # 수행시간 측정
-        import time
         start_time = time.time()
         if fit_process:
             result = obj.fit_process(train_t, train_v)
@@ -165,14 +170,22 @@ class Node():
             sub.append(self._build_sub(train_t, train_v, fit_process))
         return sub
 
-    def experiment(self, idx, results = ['object', 'output']):
+    def start_experiment(self):
+        if self.status == "finalized":
+            raise RuntimeError("")
+    
+    def experiment(self, idx, results = ['object', 'output'], finalize = False):
+        if self.grp.role != 'exp':
+            raise RuntimeError("")
+        filename = self.path / ('obj' + str(idx) + '.pkl')
+        if self.status == "built":
+            with open(filename, 'rb') as f:
+                objs = pkl.load(f)
+        elif self.status is "finalized":
+            raise RuntimeError("")
+        
+        objs = self._build_idx(idx)
         ret = list()
-        it = self.experimenter.get_data(idx, self.edges)
-        if self.method in ['transform', 'predict', 'predict_proba']:
-            objs = self._build_obj(it, False)
-        elif self.method in ['fit_transform', 'fit_predict']:
-            objs = self._build_obj(it, True)
-
         it = self.experimenter.get_data(idx, self.edges)
         result_list = list()
         for ((train_t, train_v), valid), (obj, train_, spec) in zip(it, objs):
@@ -192,6 +205,40 @@ class Node():
                     if result in ['output', 'output_valid']:
                         sub_result['output_valid'] = obj.process(valid)
             yield sub_result
+            if finalize:
+                obj.remove_obj()
+        if self.status is None:
+            with open(filename, 'wb') as f:
+                pkl.dump(objs, f)
+    
+    def end_experiment(self, finalize = False):
+        if finalize:
+            self.status = "finalized"
+        else:
+            self.status = "built"
+
+    def finalize(self):
+        if self.status != 'built':
+            raise RuntimeError("")
+        for i in range(self.experimenter.get_n_splits()):
+            filename = self.path / ('obj' + str(i) + '.pkl')
+            if os.path.isfile(filename):
+                with open(filename, 'rb') as f:
+                    objs = pkl.load(f)
+                for obj, train_, spec in objs:
+                    obj.remove_obj()
+                with open(filename, 'wb') as f:
+                    pkl.dump(objs, f)
+        self.status = "finalized"
+    
+    def get_exp_obj(self, idx):
+        filename = self.path / ('obj' + str(idx) + '.pkl')
+        if os.path.isfile(filename):
+            with open(filename, 'rb') as f:
+                objs = pkl.load(f)
+            return objs
+        else:
+            raise RuntimeError("")
 
     def adhoc(self, idx, results):
         return list(
