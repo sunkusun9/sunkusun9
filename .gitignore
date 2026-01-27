@@ -6,3 +6,4 @@ __pycache__/
 result/
 catboost_info/
 model/
+exp/

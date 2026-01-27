@@ -136,9 +136,6 @@ class TransformProcessor():
         data_wrapper_class = type(data)
         return data_wrapper_class.from_output(result, self.output_vars, data_index)
 
-    def remove_obj(self):
-        del self.obj
-
 class PredictProcessor():
     def __init__(self, node, estimator, X=None, y=None, method='predict', adapter = None, **args):
         self.node = node
@@ -277,6 +274,3 @@ class PredictProcessor():
         # data의 Wrapper 타입으로 변환
         data_wrapper_class = type(data)
         return data_wrapper_class.from_output(predictions, column_names, data_index)
-
-    def remove_obj(self):
-        del self.obj

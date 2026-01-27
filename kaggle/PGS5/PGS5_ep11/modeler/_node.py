@@ -68,6 +68,49 @@ class NodeGroup():
 
         return attrs
 
+    def save_info(self):
+        info = {
+            'name': self.name,
+            'role': self.role,
+            'processor': self.processor,
+            'edges': self.edges,
+            'X': self.X,
+            'y': self.y,
+            'method': self.method,
+            'params': self.params,
+            'parent_grp': self.parent_grp.name if self.parent_grp is not None else None,
+            'child_grps': [grp.name for grp in self.child_grps],
+            'adapter': self.adapter
+        }
+        filepath = self.path / f'__grp.pkl'
+        with open(filepath, 'wb') as f:
+            pkl.dump(info, f)
+        return filepath
+
+    def load_info(self):
+        """저장된 그룹 정보를 불러와서 어트리뷰트에 설정 (파일명: __<name>.pkl)
+
+        Returns:
+            dict: 그룹 정보 딕셔너리
+        """
+        filepath = self.path / f'__grp.pkl'
+        if not os.path.isfile(filepath):
+            raise FileNotFoundError(f"Group info file not found: {filepath}")
+        with open(filepath, 'rb') as f:
+            info = pkl.load(f)
+
+        # 어트리뷰트에 설정
+        self.role = info['role']
+        self.processor = info['processor']
+        self.edges = info['edges']
+        self.X = info['X']
+        self.y = info['y']
+        self.method = info['method']
+        self.params = info['params']
+        self.adapter = info['adapter']
+
+        return info
+
 class Node():
     def __init__(
         self, experimenter, name, processor, edges, grp, X = None, y = None, method = 'transform',
@@ -90,7 +133,9 @@ class Node():
             self.adapter_ = get_adapter(self.processor)
         else:
             self.adapter_ = self.adapter
-        self.initialize()
+        self.status = None
+        self._unload_cache()
+        self.save_info()
 
     def _unload_cache(self):
         self.cache_idx = -1
@@ -115,6 +160,8 @@ class Node():
     def start_build(self):
         self.initialize()
         self.objs_ = list()
+        if not os.path.isdir(self.path):
+                os.makedirs(self.path, exist_ok = True)
     
     def _build_idx(self, idx):
         if self.method in ['transform', 'predict', 'predict_proba']:
@@ -141,6 +188,7 @@ class Node():
 
     def end_build(self):
         self.status = "built"
+        self.save_info()
 
     def _build_sub(self, train_t, train_v, fit_process):
         if self.method in ['transform', 'fit_transform']:
@@ -173,15 +221,18 @@ class Node():
     def start_experiment(self):
         if self.status == "finalized":
             raise RuntimeError("")
+        else:
+            if not os.path.isdir(self.path):
+                os.makedirs(self.path, exist_ok = True)
     
-    def experiment(self, idx, results = ['object', 'output'], finalize = False):
+    def experiment(self, idx, include_output = True, finalize = False):
         if self.grp.role != 'exp':
             raise RuntimeError("")
         filename = self.path / ('obj' + str(idx) + '.pkl')
         if self.status == "built":
             with open(filename, 'rb') as f:
                 objs = pkl.load(f)
-        elif self.status is "finalized":
+        elif self.status == "finalized":
             raise RuntimeError("")
         
         objs = self._build_idx(idx)
@@ -189,25 +240,18 @@ class Node():
         it = self.experimenter.get_data(idx, self.edges)
         result_list = list()
         for ((train_t, train_v), valid), (obj, train_, spec) in zip(it, objs):
-            sub_result = {'spec': spec}
-            for result in results:
-                if result == 'object':
-                    sub_result['object'] = obj
-                elif result in ['output', 'output_train', 'output_valid']:
-                    if result in ['output', 'output_train']:
-                        if train_ is None:
-                            train_result = obj.process(train_t)
-                        else:
-                            train_result = train_
-                        if train_v is not None:
-                            train_v_result = obj.process(train_v)
-                        sub_result['output_train'] = (train_result, train_v_result)
-                    if result in ['output', 'output_valid']:
-                        sub_result['output_valid'] = obj.process(valid)
+            sub_result = {'spec': spec, 'object': obj}
+            if include_output:
+                if train_ is None:
+                    train_result = obj.process(train_t)
+                else:
+                    train_result = train_
+                if train_v is not None:
+                    train_v_result = obj.process(train_v)
+                sub_result['output_train'] = (train_result, train_v_result)
+                sub_result['output_valid'] = obj.process(valid)
             yield sub_result
-            if finalize:
-                obj.remove_obj()
-        if self.status is None:
+        if self.status is None and (not finalize):
             with open(filename, 'wb') as f:
                 pkl.dump(objs, f)
     
@@ -216,20 +260,16 @@ class Node():
             self.status = "finalized"
         else:
             self.status = "built"
+        self.save_info()
 
     def finalize(self):
         if self.status != 'built':
             raise RuntimeError("")
-        for i in range(self.experimenter.get_n_splits()):
-            filename = self.path / ('obj' + str(i) + '.pkl')
-            if os.path.isfile(filename):
-                with open(filename, 'rb') as f:
-                    objs = pkl.load(f)
-                for obj, train_, spec in objs:
-                    obj.remove_obj()
-                with open(filename, 'wb') as f:
-                    pkl.dump(objs, f)
+
+        if os.path.isdir(self.path):
+            shutil.rmtree(self.path)
         self.status = "finalized"
+        self.save_info()
     
     def get_exp_obj(self, idx):
         filename = self.path / ('obj' + str(idx) + '.pkl')
@@ -249,18 +289,74 @@ class Node():
     def path(self):
         return self.grp.path / self.name
 
+    def save_info(self):
+        """노드 정보를 pickle로 저장 (파일명: __<name>.pkl)
+
+        Returns:
+            Path: 저장된 파일 경로
+        """
+        info = {
+            'name': self.name,
+            'grp': self.grp.name if self.grp is not None else None,
+            'org_attr': self.org_attr,
+            'processor': self.processor,
+            'method': self.method,
+            'edges': self.edges,
+            'params': self.params,
+            'X': self.X,
+            'y': self.y,
+            'use_cache': self.use_cache,
+            'adapter': self.adapter_,
+            'status': self.status
+        }
+        filepath = self.grp.path / f'__{self.name}.pkl'
+        with open(filepath, 'wb') as f:
+            pkl.dump(info, f)
+        return filepath
+
+    def load_info(self):
+        """저장된 노드 정보를 불러와서 어트리뷰트에 설정 (파일명: __<name>.pkl)
+
+        Returns:
+            dict: 노드 정보 딕셔너리
+        """
+        filepath = self.grp.path / f'__{self.name}.pkl'
+        if not os.path.isfile(filepath):
+            raise FileNotFoundError(f"Node info file not found: {filepath}")
+        with open(filepath, 'rb') as f:
+            info = pkl.load(f)
+
+        # 어트리뷰트에 설정
+        self.org_attr = info['org_attr']
+        self.processor = info['processor']
+        self.method = info['method']
+        self.edges = info['edges']
+        self.params = info['params']
+        self.X = info['X']
+        self.y = info['y']
+        self.use_cache = info['use_cache']
+        self.adapter_ = info['adapter']
+        self.status = info['status']
+
+        return info
+
     def remove(self):
         if os.path.isdir(path):
             shutil.rmtree(path)
+        filepath = self.grp.path / f'__{self.name}.pkl'
+        if os.path.isfile(filepath):
+            os.remove(filepath)
         
     def initialize(self):
+        if self.status is None:
+            return
         path = self.path
         if os.path.isdir(path):
             shutil.rmtree(path)
-        os.makedirs(path, exist_ok = True)
         self._unload_cache()
         self.status = None
         self.objs_ = None
+        self.save_info()
 
     def _fit(self):
         self.objs_ = list()

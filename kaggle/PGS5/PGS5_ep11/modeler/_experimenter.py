@@ -65,7 +65,47 @@ class Experimenter():
 
     def get_n_splits(self):
         return len(self.train_idx_list)
-    
+
+    def add_metric(self, name, metric):
+        """Metric 인스턴스를 추가
+
+        Args:
+            name: metric 이름
+            metric: Metric 인스턴스
+        """
+        self.metric[name] = metric
+
+    def add_stacking(self, name, stacking):
+        """Stacking 인스턴스를 추가
+
+        Args:
+            name: stacking 이름
+            stacking: Stacking 인스턴스
+        """
+        self.stacking[name] = stacking
+
+    def _validate_name(self, name):
+        """Node 또는 NodeGroup 이름 검증
+
+        Args:
+            name: 검증할 이름
+
+        Raises:
+            ValueError: 이름이 유효하지 않을 경우
+        """
+        if name is None:
+            return
+
+        # '__' 포함 금지
+        if '__' in name:
+            raise ValueError(f"Name '{name}' cannot contain '__'")
+
+        # 파일/폴더명으로 사용 불가한 문자 금지
+        invalid_chars = ['/', '\\', '\0', '<', '>', ':', '"', '|', '?', '*']
+        for char in invalid_chars:
+            if char in name:
+                raise ValueError(f"Name '{name}' cannot contain '{char}'")
+
     def _find_descendants(self, node_name):
         """특정 노드에 의존하는 모든 하위 노드들을 찾음 (BFS)
 
@@ -153,6 +193,8 @@ class Experimenter():
         return True
 
     def add_grp(self, name, role = None, processor=None, edges=list(), X=None, y=None, method=None, parent_grp=None, adapter='default', params=None):
+        self._validate_name(name)
+
         if name in self.nodes:
             raise ValueError("")
 
@@ -183,7 +225,7 @@ class Experimenter():
         # 디렉터리 생성
         if grp.path is not None and not grp.path.exists():
             grp.path.mkdir(parents=True, exist_ok=True)
-
+        grp.save_info()
         return grp
 
     def _get_all_nodes_in_grp(self, grp):
@@ -319,11 +361,13 @@ class Experimenter():
                 src_path = os.path.join(old_grp_path, name)
                 dst_path = os.path.join(dst_dir, name)
                 shutil.move(src_path, dst_path)
-        
+        grp.save_info()
         print(f"✅ Group '{name}' updated, {len(node_to_initialize)} node(s) affected")
         return grp
 
     def rename_grp(self, name_from, name_to):
+        self._validate_name(name_to)
+
         if name_from not in self.grps:
             raise ValueError("")
         if name_to in self.grps:
@@ -513,6 +557,8 @@ class Experimenter():
         self, name, grp, processor = None, edges = list(), X = None, y = None,
         method = None, adapter = 'default', params = None
     ):
+        self._validate_name(name)
+
         if name in self.grps:
             raise ValueError("")
 
@@ -524,8 +570,10 @@ class Experimenter():
         # 기존 노드가 있는지 확인
         is_update = name in self.nodes
         old_edges = None
+        old_output_edges = None
         if is_update:
             old_edges = self.nodes[name].edges
+            old_output_edges = self.nodes[name].output_edges
 
         # params 기본값 처리
         if params is None:
@@ -590,6 +638,8 @@ class Experimenter():
         self._update_output_edges(name, old_edges, edges)
 
         node = Node(self, name, processor, edges, X = X, y = y, method = method, grp = grp_obj, adapter = adapter, org_attr = org_attr, params = merged_params)
+        if old_output_edges is not None:
+            node.output_edges = old_output_edges
         # grp에 노드 추가
         if grp_obj is not None:
             if name not in grp_obj.nodes:
@@ -658,11 +708,64 @@ class Experimenter():
             i for i in self._get_effected_nodes([None]) if type(i) != RootNode and i.grp.role == 'exp' and (i.name in node_names and (i.status is None or retry))
         ]
         print(f"🔄 Experimenting {len(target_nodes)} node(s)")
+
+        # start_experiment for all nodes
+        for node in target_nodes:
+            node.start_experiment()
+
+        # _start for metrics and stackings
+        for v in self.metric.values():
+            for node in target_nodes:
+                v._start(node.name)
+        for v in self.stacking.values():
+            for node in target_nodes:
+                v._start(node.name)
+
+        # experiment loop
         for i in range(self.get_n_splits()):
             print(f"{i} fold")
+            # prepare target metrics data
+            target_metrics = {
+                k: v._get_data(i) for k, v in self.metric.items()
+            }
+
             for node in target_nodes:
                 print(f"  ├─ Experimenting '{node.name}'...")
-                node.experiment(i, ['output'])
+                result_iter = node.experiment(i)
+
+                stacks = {k: list() for k in self.stacking.keys()}
+                sub_metrics = {k: list() for k in self.metric.keys()}
+
+                for n, result_data in enumerate(result_iter):
+                    # collect metrics
+                    for k, v in self.metric.items():
+                        sub_metric = v._get_metric(target_metrics[k][n], result_data)
+                        sub_metric = {k_sub: v_sub for k_sub, v_sub in sub_metric.items()}
+                        sub_metrics[k].append(sub_metric)
+                    # collect stacking data
+                    for k, v in self.stacking.items():
+                        stacks[k].append(v._get_valid(result_data))
+
+                # set metrics
+                for k, v in self.metric.items():
+                    v._set_metric(node.name, i, sub_metrics[k])
+                # aggregate and stack
+                for k, v in self.stacking.items():
+                    stk = v._aggregate(iter(stacks[k]))
+                    v._stack(node.name, i, stk)
+
+        # end_experiment for all nodes
+        for node in target_nodes:
+            node.end_experiment()
+
+        # _end for metrics and stackings
+        for v in self.metric.values():
+            for node in target_nodes:
+                v._end(node.name)
+        for v in self.stacking.values():
+            for node in target_nodes:
+                v._end(node.name)
+
         print("✅ Experimentation complete!")
 
     def get_data(self, idx, edges):
@@ -828,8 +931,8 @@ class Experimenter():
         node = self.nodes[node_name]
 
         # 노드가 빌드되지 않았으면 에러
-        if node.status is None:
-            raise ValueError(f"Node '{node_name}' is not built yet. Please call node.build() first.")
+        if node.status != 'built':
+            raise ValueError(f"Node '{node_name}' status should be built")
 
         # 외부 fold의 내부 fold들: [(processor, train_v, info), ...]
         inner_folds = node.get_exp_obj(idx)

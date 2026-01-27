@@ -3,7 +3,7 @@ import numpy as np
 from modeler._data_wrapper import DataWrapper
 from ._node_processor import resolve_columns
 
-class Stacker:
+class Stacking:
     def __init__(self, experimenter, target_edges, output_var, method='mean', include_target=True):
         self.experimenter = experimenter
         self.target_edges = target_edges
