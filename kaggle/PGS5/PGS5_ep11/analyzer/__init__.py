@@ -1,7 +1,1 @@
-from ._metric import Metric
-from ._stacker import Stacker
-
-__all__ = [
-    'Metric',
-    'Stacker',
-]
+from ._base import BaseAnalyzer

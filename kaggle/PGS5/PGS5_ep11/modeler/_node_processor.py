@@ -119,6 +119,15 @@ class TransformProcessor():
 
         # train의 Wrapper 타입으로 변환
         train_wrapper_class = type(train)
+        # 컬럼명 결정 (get_feature_names_out이 있으면 사용)
+        if hasattr(self.obj, 'get_feature_names_out'):
+            column_names = self.obj.get_feature_names_out().tolist()
+            column_names = [f"{self.node.name}__{col}" for col in column_names]
+        else:
+            column_names = None
+
+        if column_names is not None:
+            self.output_vars = column_names
         return train_wrapper_class.from_output(result, self.output_vars, train_index)
 
     def process(self, data):
@@ -126,11 +135,8 @@ class TransformProcessor():
         data_X = unwrap(data.select_columns(self.X_))
         data_index = data.get_index()
 
-        if self.y is None:
-            result = self.obj.transform(data_X)
-        else:
-            data_y = unwrap(data.select_columns(self.y))
-            result = self.obj.transform(data_X, data_y)
+        
+        result = self.obj.transform(data_X)
 
         # data의 Wrapper 타입으로 변환
         data_wrapper_class = type(data)

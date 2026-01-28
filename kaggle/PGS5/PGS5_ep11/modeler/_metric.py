@@ -1,4 +1,5 @@
 import re
+import pickle
 import pandas as pd
 from ._node_processor import resolve_columns
 
@@ -13,6 +14,80 @@ class Metric:
         self.include_train = include_train
         self.metric_func = metric_func
         self.metrics = dict()
+
+    @property
+    def metric_dir(self):
+        """metric 데이터를 저장할 디렉토리 경로"""
+        return self.experimenter.path / "__metric"
+
+    @property
+    def metric_path(self):
+        """이 metric의 저장 파일 경로"""
+        return self.metric_dir / f"{self.name}.pkl"
+
+    def _ensure_metric_dir(self):
+        """metric 디렉토리가 존재하는지 확인하고 없으면 생성"""
+        if not self.metric_dir.exists():
+            self.metric_dir.mkdir(parents=True, exist_ok=True)
+        return self.metric_dir
+
+    def save(self):
+        """name, target_edges, output_var, include_train, metric_func, metrics를 파일로 저장"""
+        self._ensure_metric_dir()
+        data = {
+            'name': self.name,
+            'target_edges': self.target_edges,
+            'output_var': self.output_var,
+            'include_train': self.include_train,
+            'metric_func': self.metric_func,
+            'metrics': self.metrics
+        }
+        with open(self.metric_path, 'wb') as f:
+            pickle.dump(data, f)
+
+    def load(self):
+        """파일에서 name, target_edges, output_var, include_train, metric_func, metrics를 로드"""
+        if not self.metric_path.exists():
+            raise FileNotFoundError(f"Metric data not found: {self.metric_path}")
+        with open(self.metric_path, 'rb') as f:
+            data = pickle.load(f)
+        self.name = data['name']
+        self.target_edges = data['target_edges']
+        self.output_var = data['output_var']
+        self.include_train = data['include_train']
+        self.metric_func = data['metric_func']
+        self.metrics = data['metrics']
+
+    @classmethod
+    def load_from_file(cls, experimenter, name):
+        """저장된 Metric 정보를 불러와서 Metric 인스턴스 생성
+
+        Args:
+            experimenter: Experimenter 인스턴스
+            name: metric 이름
+
+        Returns:
+            Metric: 복원된 Metric 인스턴스
+        """
+        filepath = experimenter.path / "__metric" / f"{name}.pkl"
+        if not filepath.exists():
+            raise FileNotFoundError(f"Metric data not found: {filepath}")
+
+        with open(filepath, 'rb') as f:
+            data = pickle.load(f)
+
+        # Metric 인스턴스 생성
+        metric = cls(
+            name=data['name'],
+            experimenter=experimenter,
+            target_edges=data['target_edges'],
+            output_var=data['output_var'],
+            metric_func=data['metric_func'],
+            include_train=data['include_train']
+        )
+        metric.metrics = data['metrics']
+
+        return metric
 
     def _get_data(self, idx):
         return list(
@@ -44,7 +119,7 @@ class Metric:
         l.append(metric)
 
     def _end(self, node):
-        pass
+        self.save()
 
     def _get_nodes(self, nodes):
         if nodes is None:
@@ -62,6 +137,7 @@ class Metric:
     def reset_nodes(self, nodes):
         for node in self._get_nodes(nodes):
             del self.metrics[node]
+        self.save()
 
     def get_metric(self, node):
         l = list()

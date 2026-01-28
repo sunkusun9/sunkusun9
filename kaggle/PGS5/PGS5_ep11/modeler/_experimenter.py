@@ -9,9 +9,11 @@ from sklearn.model_selection import ShuffleSplit
 from ._data_wrapper import wrap, unwrap
 from ._node import NodeGroup, Node, RootNode
 from ._describer import desc_spec, desc_pipeline, desc_node, desc_node_vars
+from ._metric import Metric
+from ._stacking import Stacking
 
 class Experimenter():
-    def __init__(self, data, path, data_names=None, sp=ShuffleSplit(n_splits=1, random_state=1), sp_v=None, splitter_params=None, title=None):
+    def __init__(self, data, path, data_names=None, sp=ShuffleSplit(n_splits=1, random_state=1), sp_v=None, splitter_params=None, title=None, data_key=None):
         self.train_idx_list = list()
         self.valid_idx_list = list()
         data_native = data
@@ -21,7 +23,9 @@ class Experimenter():
         # 실험 타이틀 저장
         self.title = title
 
-        
+        # data 식별자 (load 시 검증용)
+        self.data_key = data_key
+
         self.path = Path(path)
         if not self.path.exists():
             self.path.mkdir(parents=True, exist_ok=True)
@@ -66,23 +70,62 @@ class Experimenter():
     def get_n_splits(self):
         return len(self.train_idx_list)
 
-    def add_metric(self, name, metric):
-        """Metric 인스턴스를 추가
+    def add_metric(self, name, target_edges, output_var, metric_func, include_train=False):
+        """Metric 인스턴스를 생성하여 추가
 
         Args:
             name: metric 이름
-            metric: Metric 인스턴스
-        """
-        self.metric[name] = metric
+            target_edges: 타겟 edges
+            output_var: 출력 변수
+            metric_func: metric 함수
+            include_train: train 결과 포함 여부 (기본값: False)
 
-    def add_stacking(self, name, stacking):
-        """Stacking 인스턴스를 추가
+        Returns:
+            Metric: 생성된 Metric 인스턴스
+        """
+        # __metric 폴더 생성 (최초 추가 시)
+        metric_dir = self.path / "__metric"
+        if not metric_dir.exists():
+            metric_dir.mkdir(parents=True, exist_ok=True)
+
+        metric = Metric(
+            name=name,
+            experimenter=self,
+            target_edges=target_edges,
+            output_var=output_var,
+            metric_func=metric_func,
+            include_train=include_train
+        )
+        self.metric[name] = metric
+        self._save()
+        return metric
+
+    def add_stacking(self, name, target_edges, output_var, method='mean', include_target=True):
+        """Stacking 인스턴스를 생성하여 추가
 
         Args:
             name: stacking 이름
-            stacking: Stacking 인스턴스
+            target_edges: 타겟 edges
+            output_var: 출력 변수
+            method: 집계 방법 (기본값: 'mean')
+            include_target: 타겟 포함 여부 (기본값: True)
+
+        Returns:
+            Stacking: 생성된 Stacking 인스턴스
         """
+
+        stacking = Stacking(
+            experimenter=self,
+            target_edges=target_edges,
+            output_var=output_var,
+            method=method,
+            include_target=include_target
+        )
+        stacking.name = name
+        stacking.save_config()
         self.stacking[name] = stacking
+        self._save()
+        return stacking
 
     def _validate_name(self, name):
         """Node 또는 NodeGroup 이름 검증
@@ -226,6 +269,7 @@ class Experimenter():
         if grp.path is not None and not grp.path.exists():
             grp.path.mkdir(parents=True, exist_ok=True)
         grp.save_info()
+        self._save()
         return grp
 
     def _get_all_nodes_in_grp(self, grp):
@@ -354,6 +398,12 @@ class Experimenter():
         for node in node_to_initialize:
             node.initialize()
 
+        for v in self.metric.values():
+            v.reset_nodes(node_to_initialize)
+        
+        for v in self.stacking.values():
+            v.reset_nodes(node_to_initialize)
+
         new_grp_path = grp.path
         if old_grp_path != new_grp_path:
             os.makedirs(dst_dir, exist_ok=True)
@@ -363,6 +413,7 @@ class Experimenter():
                 shutil.move(src_path, dst_path)
         grp.save_info()
         print(f"✅ Group '{name}' updated, {len(node_to_initialize)} node(s) affected")
+        self._save()
         return grp
 
     def rename_grp(self, name_from, name_to):
@@ -390,6 +441,7 @@ class Experimenter():
         shutil.rmtree(old_grp_path)
         del self.grps[name_from]
         self.grps[name_to] = grp
+        self._save()
         
     def _get_effected_nodes(self, nodes):
         # 우선순위 알고리즘: BFS로 노드들의 빌드 우선순위 결정
@@ -440,6 +492,7 @@ class Experimenter():
         del self.grps[name]
 
         print(f"✅ Group '{name}' removed")
+        self._save()
 
     def get_parents(self, node_name):
         if node_name not in self.nodes:
@@ -519,15 +572,25 @@ class Experimenter():
         del self.nodes[name]
 
         print(f"✅ Node '{name}' removed")
+        self._save()
 
-    def finalize_node(self, name):
-        if name not in self.nodes:
-            raise ValueError(f"Node '{name}' not found")
-
-        if name is None:
-            raise ValueError("Cannot remove Root node")
-        node = self.nodes[name]
-        node.finalize()
+    def finalize(self, nodes):
+        if nodes is None:
+            # 기존 동작: 모든 root group의 노드
+            node_names = list(self.nodes.keys())
+        elif isinstance(nodes, list):
+            node_names = [n for n in nodes if n in self.nodes]
+        elif isinstance(nodes, str):
+            pat = re.compile(nodes)
+            node_names = [k for k in self.nodes.keys() if k is not None and pat.search(k)]
+        else:
+            raise ValueError(f"nodes must be None, list, or str, got {type(nodes)}")
+        target_nodes = list()
+        for i in node_names:
+            node = self.nodes[i]
+            if type(node) != RootNode and node.grp.role == 'exp' and node.status == 'built':
+                print(f"  ├─ Finalize '{i}'")
+                node.finalize()
 
     def _update_output_edges(self, node_name, old_edges, new_edges):
         """output_edges 무결성 유지
@@ -653,6 +716,12 @@ class Experimenter():
                 for i in descendants:
                     self.nodes[i].initialize()
 
+                for v in self.metric.values():
+                    v.reset_nodes(descendants)
+                
+                for v in self.stacking.values():
+                    v.reset_nodes(descendants)
+
         # 그룹이 변경된 경우 이전 그룹에서 노드 제거
         if is_update and self.nodes[name].grp.name != grp_name:
             old_grp_name = self.nodes[name].grp.name
@@ -665,6 +734,7 @@ class Experimenter():
                 print(f"  └─ Moved '{name}' to group '{grp_name}'")
 
         self.nodes[name] = node
+        self._save()
         return node
 
     def build(self, nodes = None, rebuild = False):
@@ -767,6 +837,57 @@ class Experimenter():
                 v._end(node.name)
 
         print("✅ Experimentation complete!")
+
+    def analyze(self, analyzers, nodes=None):
+        """built 상태의 노드에 대해 분석 수행
+
+        Args:
+            analyzers: Analyzer 인스턴스 또는 리스트
+            nodes: 분석할 노드 (None이면 모든 built 노드)
+        """
+        if not isinstance(analyzers, list):
+            analyzers = [analyzers]
+
+        # built 상태 노드만 필터링
+        if nodes is None:
+            node_names = list(self.nodes.keys())
+        elif isinstance(nodes, list):
+            node_names = [n for n in nodes if n in self.nodes]
+        elif isinstance(nodes, str):
+            pat = re.compile(nodes)
+            node_names = [k for k in self.nodes.keys() if k is not None and pat.search(k)]
+        else:
+            raise ValueError(f"nodes must be None, list, or str, got {type(nodes)}")
+
+        target_nodes = [
+            self.nodes[n] for n in node_names
+            if n is not None and self.nodes[n].status == 'built'
+        ]
+
+        if not target_nodes:
+            print("No built nodes to analyze")
+            return
+
+        print(f"🔍 Analyzing {len(target_nodes)} node(s)...")
+
+        # _start for all analyzers
+        for analyzer in analyzers:
+            for node in target_nodes:
+                analyzer._start(node.name)
+
+        # analyze loop
+        for node in target_nodes:
+            print(f"  ├─ Analyzing '{node.name}'...")
+            for idx in range(self.get_n_splits()):
+                for analyzer in analyzers:
+                    analyzer._analyze(node.name, idx)
+
+        # _end for all analyzers
+        for analyzer in analyzers:
+            for node in target_nodes:
+                analyzer._end(node.name)
+
+        print("✅ Analysis complete!")
 
     def get_data(self, idx, edges):
         def ret_data_func(data_list):
@@ -962,41 +1083,151 @@ class Experimenter():
 
         return result
 
-    def save(self, filepath):
+    def _get_grp_load_order(self):
+        """NodeGroup 로딩 순서를 BFS로 계산 (parent가 없는 그룹부터 시작)
+
+        Returns:
+            list: 로딩 순서에 맞는 (grp_name, parent_grp_name) 튜플 리스트
+        """
+        result = []
+        # 최상위 그룹 찾기 (parent_grp가 None인 그룹)
+        queue = [(grp.name, None) for grp in self.grps.values() if grp.parent_grp is None]
+
+        while queue:
+            grp_name, parent_name = queue.pop(0)
+            result.append((grp_name, parent_name))
+            grp = self.grps[grp_name]
+            # 자식 그룹을 큐에 추가
+            for child_grp in grp.child_grps:
+                queue.append((child_grp.name, grp_name))
+
+        return result
+
+    def _get_node_load_order(self):
+        """Node 로딩 순서를 계산 (_get_effected_nodes 사용)
+
+        Returns:
+            list: 로딩 순서에 맞는 (node_name, grp_name) 튜플 리스트
+        """
+        effected = self._get_effected_nodes([None])
+        result = []
+        for node in effected:
+            if type(node) != RootNode:
+                result.append((node.name, node.grp.name))
+        return result
+
+    def _save(self, filepath=None):
         """Experimenter 객체를 파일로 저장
 
         Args:
-            filepath: 저장할 파일 경로
+            filepath: 저장할 파일 경로 (None이면 self.path / '__exp.pkl')
         """
-        # 모든 노드의 캐시를 언로드
-        print("🗑️  Unloading all node caches before saving...")
-        cache_count = 0
-        for name, node in self.nodes.items():
-            if name is not None and hasattr(node, '_unload_cache'):
-                node._unload_cache()
-                cache_count += 1
-        print(f"   Unloaded cache from {cache_count} node(s)")
+        if filepath is None:
+            filepath = self.path / '__exp.pkl'
 
-        # Experimenter 객체를 pickle로 저장
-        print(f"💾 Saving Experimenter to {filepath}...")
+        # 저장할 데이터 구성 (data는 저장하지 않음)
+        save_data = {
+            'data_key': self.data_key,
+            'title': self.title,
+            'sp': self.sp,
+            'sp_v': self.sp_v,
+            'splitter_params': self.splitter_params,
+            'exp_id': self.exp_id,
+            'grp_load_order': self._get_grp_load_order(),
+            'node_load_order': self._get_node_load_order(),
+            'metric_keys': list(self.metric.keys()),
+            'stacking_keys': list(self.stacking.keys())
+        }
+
+        # print(f"💾 Saving Experimenter to {filepath}...")
         with open(filepath, 'wb') as f:
-            pkl.dump(self, f)
-
+            pkl.dump(save_data, f)
+        """
         print(f"✅ Experimenter saved successfully")
+        print(f"   - {len(save_data['node_load_order'])} node(s)")
+        print(f"   - {len(save_data['grp_load_order'])} group(s)")
+        print(f"   - {len(save_data['metric_keys'])} metric(s)")
+        print(f"   - {len(save_data['stacking_keys'])} stacking(s)")
+        """
 
     @staticmethod
-    def load(filepath):
+    def load(filepath, data, data_key=None):
         """파일에서 Experimenter 객체를 불러옴
 
         Args:
             filepath: 불러올 파일 경로
+            data: 실험에 사용할 데이터
+            data_key: 데이터 식별자 (저장된 data_key와 비교하여 검증)
 
         Returns:
             Experimenter: 불러온 Experimenter 객체
+
+        Raises:
+            ValueError: 저장된 data_key와 전달된 data_key가 일치하지 않는 경우
         """
+        from ._metric import Metric
+        from ._stacking import Stacking
+
+        filepath = Path(filepath) 
         print(f"📂 Loading Experimenter from {filepath}...")
-        with open(filepath, 'rb') as f:
-            exp = pkl.load(f)
+        with open(filepath / '__exp.pkl', 'rb') as f:
+            save_data = pkl.load(f)
+
+        # data_key 검증 (저장된 data_key가 None이 아닌 경우에만)
+        saved_data_key = save_data.get('data_key')
+        if saved_data_key is not None and saved_data_key != data_key:
+            raise ValueError(
+                f"data_key mismatch: saved='{saved_data_key}', provided='{data_key}'"
+            )
+
+        # Experimenter 생성자 활용
+        exp = Experimenter(
+            data=data,
+            path=filepath,
+            sp=save_data['sp'],
+            sp_v=save_data['sp_v'],
+            splitter_params=save_data['splitter_params'],
+            title=save_data['title'],
+            data_key=saved_data_key
+        )
+        # exp_id를 저장된 값으로 복원
+        exp.exp_id = save_data['exp_id']
+
+        # NodeGroup 복원 (로딩 순서대로)
+        print(f"   Loading {len(save_data['grp_load_order'])} group(s)...")
+        for grp_name, parent_grp_name in save_data['grp_load_order']:
+            parent_grp = exp.grps.get(parent_grp_name) if parent_grp_name else None
+            grp = NodeGroup.load(exp, grp_name, parent_grp)
+            exp.grps[grp_name] = grp
+
+        # Node 복원 (로딩 순서대로)
+        print(f"   Loading {len(save_data['node_load_order'])} node(s)...")
+        for node_name, grp_name in save_data['node_load_order']:
+            grp = exp.grps[grp_name]
+            node = Node.load(exp, grp, node_name)
+            exp.nodes[node_name] = node
+
+        # output_edges 재구성
+        for node_name, node in exp.nodes.items():
+            if node_name is None:
+                continue
+            for edge_name, _ in node.edges:
+                if edge_name in exp.nodes:
+                    parent_node = exp.nodes[edge_name]
+                    if node_name not in parent_node.output_edges:
+                        parent_node.output_edges.append(node_name)
+
+        # Metric 복원
+        print(f"   Loading {len(save_data['metric_keys'])} metric(s)...")
+        for metric_name in save_data['metric_keys']:
+            metric = Metric.load_from_file(exp, metric_name)
+            exp.metric[metric_name] = metric
+
+        # Stacking 복원
+        print(f"   Loading {len(save_data['stacking_keys'])} stacking(s)...")
+        for stacking_name in save_data['stacking_keys']:
+            stacking = Stacking.load_from_file(exp, stacking_name)
+            exp.stacking[stacking_name] = stacking
 
         print(f"✅ Experimenter loaded successfully")
         print(f"   - {len(exp.nodes) - 1} node(s)")

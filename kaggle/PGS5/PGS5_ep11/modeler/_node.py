@@ -111,6 +111,51 @@ class NodeGroup():
 
         return info
 
+    @classmethod
+    def load(cls, experimenter, name, parent_grp=None):
+        """저장된 그룹 정보를 불러와서 NodeGroup 인스턴스 생성
+
+        Args:
+            experimenter: Experimenter 인스턴스
+            name: 그룹 이름
+            parent_grp: 부모 그룹 객체 (None이면 최상위 그룹)
+
+        Returns:
+            NodeGroup: 복원된 NodeGroup 인스턴스
+        """
+        # 경로 계산 (parent_grp가 있으면 그 아래, 없으면 experimenter.path 바로 아래)
+        if parent_grp is not None:
+            filepath = parent_grp.path / name / '__grp.pkl'
+        else:
+            filepath = experimenter.path / name / '__grp.pkl'
+
+        if not os.path.isfile(filepath):
+            raise FileNotFoundError(f"Group info file not found: {filepath}")
+
+        with open(filepath, 'rb') as f:
+            info = pkl.load(f)
+
+        # NodeGroup 인스턴스 생성 (기본값으로 생성 후 속성 설정)
+        grp = cls(
+            experimenter=experimenter,
+            name=name,
+            role=info['role'],
+            processor=info['processor'],
+            edges=info['edges'],
+            X=info['X'],
+            y=info['y'],
+            method=info['method'],
+            parent_grp=parent_grp,
+            adapter=info['adapter'],
+            params=info['params']
+        )
+
+        # parent의 child_grps에 추가
+        if parent_grp is not None:
+            parent_grp.child_grps.append(grp)
+
+        return grp
+
 class Node():
     def __init__(
         self, experimenter, name, processor, edges, grp, X = None, y = None, method = 'transform',
@@ -340,6 +385,56 @@ class Node():
 
         return info
 
+    @classmethod
+    def load(cls, experimenter, grp, name):
+        """저장된 노드 정보를 불러와서 Node 인스턴스 생성
+
+        Args:
+            experimenter: Experimenter 인스턴스
+            grp: NodeGroup 인스턴스
+            name: 노드 이름
+
+        Returns:
+            Node: 복원된 Node 인스턴스
+        """
+        filepath = grp.path / f'__{name}.pkl'
+        if not os.path.isfile(filepath):
+            raise FileNotFoundError(f"Node info file not found: {filepath}")
+
+        with open(filepath, 'rb') as f:
+            info = pkl.load(f)
+
+        # Node 인스턴스 생성 (save_info 호출을 피하기 위해 빈 객체 생성 후 속성 설정)
+        node = object.__new__(cls)
+        node.experimenter = experimenter
+        node.name = name
+        node.grp = grp
+        node.org_attr = info['org_attr']
+        node.processor = info['processor']
+        node.method = info['method']
+        node.edges = info['edges']
+        node.params = info['params']
+        node.X = info['X']
+        node.y = info['y']
+        node.use_cache = info['use_cache']
+        node.adapter_ = info['adapter']
+        node.status = info['status']
+        if node.status == 'built' and grp.role == 'pipe':
+            node.objs_ = list()
+            for idx in range(experimenter.get_n_splits()):
+                filename = node.path / ('obj' + str(idx) + '.pkl')
+                with open(filename, 'rb') as f:
+                    bobj = pkl.load(f)
+                node.objs_.append(bobj)
+        node.output_edges = []  # edges 복원 후 재구성됨
+        node._unload_cache()
+
+        # grp.nodes에 추가
+        if name not in grp.nodes:
+            grp.nodes.append(name)
+
+        return node
+
     def remove(self):
         if os.path.isdir(path):
             shutil.rmtree(path)
@@ -520,7 +615,6 @@ class Node():
             self.cache_idx_v = idx
             self.cache_v_param_v = v
         return ret_func()
-    
     
 class RootNode():
     def __init__(self, experimenter, data):
