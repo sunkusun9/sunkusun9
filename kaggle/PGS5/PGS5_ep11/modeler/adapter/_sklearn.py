@@ -5,14 +5,8 @@ import numpy as np
 
 
 class LMAdapter(ModelAdapter):
-    result_objs = ['coef']
-
-    def get_result(self, processor, name):
-        if name == 'coef':
-            return self._get_coef(processor)
-        raise ValueError(f"{name} Unsupported result")
-
-    def _get_coef(self, processor):
+    @staticmethod
+    def _get_coef( processor):
         coef_ = processor.obj.coef_
         if len(coef_.shape) == 1:
             if hasattr(processor.obj, 'intercept_'):
@@ -30,38 +24,29 @@ class LMAdapter(ModelAdapter):
                 coef_ = processor.obj.coef_
                 coef_name = processor.X_
             idx = np.arange(coef_.shape[0])
-        return pd.DataFrame(coef_, index=idx, columns=coef_name)
+        return pd.DataFrame(coef_, index=idx, columns=coef_name).stack().rename('coef')
 
+LMAdapter.result_objs = {'coef': (LMAdapter._get_coef, True)}
 
 class PCAAdapter(ModelAdapter):
-    result_objs = ['explained_variance', 'explained_variance_ratio', 'components']
-
-    def get_result(self, processor, name):
-        if name == 'explained_variance':
-            return self._get_explained_variance(processor)
-        elif name == 'explained_variance_ratio':
-            return self._get_explained_variance_ratio(processor)
-        elif name == 'components':
-            return self._get_components(processor)
-        raise ValueError(f"{name} Unsupported result")
-
-    def _get_explained_variance(self, processor):
+    @staticmethod
+    def _get_explained_variance(processor):
         obj = processor.obj
         output_vars = list(processor.output_vars) if hasattr(processor, 'output_vars') and processor.output_vars is not None else list(range(len(obj.explained_variance_)))
-        return pd.DataFrame(
-            [obj.explained_variance_],
-            columns=output_vars
+        return pd.Series(
+            obj.explained_variance_, index=output_vars, name = 'variance'
         )
-
-    def _get_explained_variance_ratio(self, processor):
+    
+    @staticmethod
+    def _get_explained_variance_ratio(processor):
         obj = processor.obj
         output_vars = list(processor.output_vars) if hasattr(processor, 'output_vars') and processor.output_vars is not None else list(range(len(obj.explained_variance_ratio_)))
-        return pd.DataFrame(
-            [obj.explained_variance_ratio_],
-            columns=output_vars
+        return pd.Series(
+            obj.explained_variance_ratio_, index=output_vars, name='ratio'
         )
 
-    def _get_components(self, processor):
+    @staticmethod
+    def _get_components(processor):
         obj = processor.obj
         input_vars = list(processor.X_) if hasattr(processor, 'X_') and processor.X_ is not None else list(range(obj.components_.shape[1]))
         output_vars = list(processor.output_vars) if hasattr(processor, 'output_vars') and processor.output_vars is not None else list(range(obj.components_.shape[0]))
@@ -69,24 +54,18 @@ class PCAAdapter(ModelAdapter):
             obj.components_,
             index=output_vars,
             columns=input_vars
-        )
+        ).stack().raname('component')
+
+PCAAdapter.result_objs = {
+    'explained_variance': (PCAAdapter._get_explained_variance, True),
+    'explained_variance_ratio': (PCAAdapter._get_explained_variance_ratio, True),
+    'components': (PCAAdapter._get_components, True)
+}
 
 
 class LDAAdapter(ModelAdapter):
-    result_objs = ['coef', 'intercept', 'scalings', 'explained_variance_ratio']
-
-    def get_result(self, processor, name):
-        if name == 'coef':
-            return self._get_coef(processor)
-        elif name == 'intercept':
-            return self._get_intercept(processor)
-        elif name == 'scalings':
-            return self._get_scalings(processor)
-        elif name == 'explained_variance_ratio':
-            return self._get_explained_variance_ratio(processor)
-        raise ValueError(f"{name} Unsupported result")
-
-    def _get_coef(self, processor):
+    @staticmethod
+    def _get_coef(processor):
         obj = processor.obj
         input_vars = list(processor.X_) if hasattr(processor, 'X_') and processor.X_ is not None else list(range(obj.coef_.shape[-1]))
         classes = list(processor.classes_) if hasattr(processor, 'classes_') and processor.classes_ is not None else list(range(obj.coef_.shape[0] if obj.coef_.ndim > 1 else 1))
@@ -99,9 +78,10 @@ class LDAAdapter(ModelAdapter):
             coef,
             index=classes,
             columns=input_vars
-        )
+        ).unstack().rename('value')
 
-    def _get_intercept(self, processor):
+    @staticmethod
+    def _get_intercept(processor):
         obj = processor.obj
         classes = list(processor.classes_) if hasattr(processor, 'classes_') and processor.classes_ is not None else list(range(len(np.atleast_1d(obj.intercept_))))
 
@@ -109,12 +89,12 @@ class LDAAdapter(ModelAdapter):
         if np.isscalar(intercept):
             intercept = [intercept]
 
-        return pd.DataFrame(
-            [intercept],
-            columns=classes
+        return pd.Series(
+            intercept, index=classes, name = 'intercept'
         )
 
-    def _get_scalings(self, processor):
+    @staticmethod
+    def _get_scalings(processor):
         obj = processor.obj
         input_vars = list(processor.X_) if hasattr(processor, 'X_') and processor.X_ is not None else list(range(obj.scalings_.shape[0]))
         output_vars = list(processor.output_vars) if hasattr(processor, 'output_vars') and processor.output_vars is not None else [f'LD{i}' for i in range(obj.scalings_.shape[1])]
@@ -123,38 +103,35 @@ class LDAAdapter(ModelAdapter):
             obj.scalings_,
             index=input_vars,
             columns=output_vars
-        )
+        ).unstack().rename('scale')
 
-    def _get_explained_variance_ratio(self, processor):
+    @staticmethod
+    def _get_explained_variance_ratio(processor):
         obj = processor.obj
         output_vars = list(processor.output_vars) if hasattr(processor, 'output_vars') and processor.output_vars is not None else [f'LD{i}' for i in range(len(obj.explained_variance_ratio_))]
 
-        return pd.DataFrame(
-            [obj.explained_variance_ratio_],
-            columns=output_vars
+        return pd.Series(
+            obj.explained_variance_ratio_, index=output_vars, name = 'ratio'
         )
-
+LDAAdapter.result_objs = {
+    'coef': (LDAAdapter._get_coef, True),
+    'intercept': (LDAAdapter._get_intercept, True),
+    'scalings': (LDAAdapter._get_scalings, True),
+    'explained_variance_ratio': (LDAAdapter._get_explained_variance_ratio, True)
+}
 
 class DecisionTreeAdapter(ModelAdapter):
-    result_objs = ['feature_importances', 'tree']
-
-    def get_result(self, processor, name):
-        if name == 'feature_importances':
-            return self._get_feature_importances(processor)
-        elif name == 'tree':
-            return self._get_tree(processor)
-        raise ValueError(f"{name} Unsupported result")
-
-    def _get_feature_importances(self, processor):
+    @staticmethod
+    def _get_feature_importances(processor):
         obj = processor.obj
         input_vars = list(processor.X_) if hasattr(processor, 'X_') and processor.X_ is not None else list(range(len(obj.feature_importances_)))
 
-        return pd.DataFrame(
-            [obj.feature_importances_],
-            columns=input_vars
+        return pd.Series(
+            obj.feature_importances_, index=input_vars, name = 'importance'
         )
-
-    def _get_tree(self, processor):
+    
+    @staticmethod
+    def _get_tree(processor):
         obj = processor.obj
         input_vars = list(processor.X_) if hasattr(processor, 'X_') and processor.X_ is not None else list(range(obj.n_features_in_))
 
@@ -175,3 +152,8 @@ class DecisionTreeAdapter(ModelAdapter):
             tree_structure.append(node_dict)
 
         return pd.DataFrame(tree_structure)
+
+DecisionTreeAdapter.result_objs = {
+    'feature_importances': (DecisionTreeAdapter._get_feature_importances, True),
+    'tree': (DecisionTreeAdapter._get_tree, False)
+}

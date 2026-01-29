@@ -135,7 +135,9 @@ class Metric:
         return node_names
     
     def reset_nodes(self, nodes):
-        for node in self._get_nodes(nodes):
+        for node in nodes:
+            if node not in self.metrics:
+                continue
             del self.metrics[node]
         self.save()
 

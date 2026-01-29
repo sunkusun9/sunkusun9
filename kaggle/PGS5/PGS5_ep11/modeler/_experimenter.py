@@ -3,7 +3,12 @@ import os
 import uuid
 import pickle as pkl
 import shutil
+import traceback
+import warnings
 from pathlib import Path
+
+import pandas as pd
+
 from sklearn.model_selection import ShuffleSplit
 
 from ._data_wrapper import wrap, unwrap
@@ -11,9 +16,13 @@ from ._node import NodeGroup, Node, RootNode
 from ._describer import desc_spec, desc_pipeline, desc_node, desc_node_vars
 from ._metric import Metric
 from ._stacking import Stacking
+from ._logger import DefaultLogger
 
 class Experimenter():
-    def __init__(self, data, path, data_names=None, sp=ShuffleSplit(n_splits=1, random_state=1), sp_v=None, splitter_params=None, title=None, data_key=None):
+    def __init__(
+            self, data, path, data_names=None, sp=ShuffleSplit(n_splits=1, random_state=1), sp_v=None, splitter_params=None, title=None, data_key=None,
+            logger = DefaultLogger(level=['info', 'progress'])
+        ):
         self.train_idx_list = list()
         self.valid_idx_list = list()
         data_native = data
@@ -25,11 +34,11 @@ class Experimenter():
 
         # data 식별자 (load 시 검증용)
         self.data_key = data_key
-
+        self.logger = logger
         self.path = Path(path)
         if not self.path.exists():
             self.path.mkdir(parents=True, exist_ok=True)
-            print(f"📁 Created directory: {self.path}")
+            self.logger.info(f"📁 Created directory: {self.path}")
 
         # splitter 설정 저장
         self.sp = sp
@@ -206,22 +215,6 @@ class Experimenter():
         if cycle_edges:
             return True, cycle_edges
         return False, []
-
-    def _rebuild_node_and_descendants(self, node_name):
-        """노드와 그 하위 노드들을 모두 재빌드"""
-        # 재빌드할 노드들 찾기
-        nodes_to_rebuild = [node_name] + sorted(self._find_descendants(node_name))
-
-        print(f"🔄 Rebuilding nodes: {nodes_to_rebuild}")
-
-        # 토폴로지컬 순서로 재빌드 (의존하는 순서대로)
-        for node in nodes_to_rebuild:
-            node.start_build()
-        for i in range(self.get_n_splits()):
-            for node in nodes_to_rebuild:
-                print(f"  ├─ Rebuilding '{node.name}'...")
-                node.build_idx(i)
-        print("✅ Rebuild complete!")
     
     def _check_edges(self, edges):
         if edges is None:
@@ -230,47 +223,10 @@ class Experimenter():
             if name is None:
                 continue
             if name not in self.nodes:
-                raise ValueError("")
+                raise ValueError(f"Edge node '{name}' not found")
             if self.nodes[name].grp.role != 'pipe':
-                raise ValueError("")
+                raise ValueError(f"Edge node '{name}' must be a pipe node, got '{self.nodes[name].grp.role}'")
         return True
-
-    def add_grp(self, name, role = None, processor=None, edges=list(), X=None, y=None, method=None, parent_grp=None, adapter='default', params=None):
-        self._validate_name(name)
-
-        if name in self.nodes:
-            raise ValueError("")
-
-        if name in self.grps:
-            raise ValueError("")
-
-        # parent_grp가 문자열이면 grps에서 찾기
-        if parent_grp is not None:
-            if parent_grp not in self.grps:
-                raise ValueError(f"Parent group '{parent_grp}' not found")
-            parent_grp = self.grps.get(parent_grp)
-            if role is None:
-                role = parent_grp.role
-        if role not in ['pipe', 'exp']:
-            raise ValueError("")
-        
-        self._check_edges(edges)
-        # NodeGroup 생성
-        grp = NodeGroup(self, name, role, processor=processor, edges=edges, X=X, y=y, method=method, parent_grp=parent_grp, adapter=adapter, params=params)
-
-        # parent의 child_grps에 추가
-        if parent_grp is not None:
-            parent_grp.child_grps.append(grp)
-
-        # grps 딕셔너리에 등록
-        self.grps[name] = grp
-
-        # 디렉터리 생성
-        if grp.path is not None and not grp.path.exists():
-            grp.path.mkdir(parents=True, exist_ok=True)
-        grp.save_info()
-        self._save()
-        return grp
 
     def _get_all_nodes_in_grp(self, grp):
         """그룹과 하위 그룹의 모든 노드 이름을 수집"""
@@ -301,23 +257,45 @@ class Experimenter():
             grp_edges = grp_attrs.get('edges', [])
             return grp_edges + node_own_edges
 
-    def set_grp(self, name, processor=None, edges=None, X=None, y=None, method=None, parent_grp=None, adapter=None, params=None):
-        # 1. 그룹 존재 확인
-        if name not in self.grps:
-            raise ValueError(f"Group '{name}' not found")
+    def set_grp(self, name, role=None, processor=None, edges=[], X=None, y=None, method=None, parent_grp=None, adapter=None, params=None):
+        self._validate_name(name)
         self._check_edges(edges)
-        grp = self.grps[name]
-        old_grp_path = grp.path
-        # 2. parent_grp 유효성 검증
-        new_parent = None
-        if parent_grp is not None:
-            if isinstance(parent_grp, str):
-                if parent_grp not in self.grps:
-                    raise ValueError(f"Parent group '{parent_grp}' not found")
-                new_parent = self.grps[parent_grp]
-            else:
-                new_parent = parent_grp
+        if name in self.nodes:
+            raise ValueError(f"Name '{name}' already exists as a node")
 
+        # parent_grp가 문자열이면 grps에서 찾기
+        if parent_grp is not None:
+            if parent_grp not in self.grps:
+                raise ValueError(f"Parent group '{parent_grp}' not found")
+            parent_grp = self.grps.get(parent_grp)
+            if role is None:
+                role = parent_grp.role
+        if role not in ['pipe', 'exp']:
+            raise ValueError(f"Role must be 'pipe' or 'exp', got '{role}'")
+        # 1. 새로운 그룹일 경우 추가
+        if name not in self.grps:
+            self._check_edges(edges)
+            # NodeGroup 생성
+            grp = NodeGroup(self, name, role, processor=processor, edges=edges, X=X, y=y, method=method, parent_grp=parent_grp, adapter=adapter, params=params)
+
+            # parent의 child_grps에 추가
+            if parent_grp is not None:
+                parent_grp.child_grps.append(grp)
+
+            # grps 딕셔너리에 등록
+            self.grps[name] = grp
+
+            # 디렉터리 생성
+            if grp.path is not None and not grp.path.exists():
+                grp.path.mkdir(parents=True, exist_ok=True)
+            grp.save_info()
+            self._save()
+            return grp
+
+        grp = self.grps[name]
+        if grp.role != role:
+            raise ValueError(f"Cannot change role of group '{name}': existing '{grp.role}', requested '{role}'")
+        old_grp_path = grp.path
         # 3. edges 변경 시 순환 구조 체크 (변경 전 검증)
         if edges is not None:
             new_edges = edges if isinstance(edges, list) else [edges]
@@ -391,7 +369,7 @@ class Experimenter():
         # 5. 영향받는 노드들 초기화
         all_affected_nodes = self._get_all_nodes_in_grp(grp)
         if len(all_affected_nodes) == 0:
-            print(f"✅ Group '{name}' updated (no nodes to rebuild)")
+            self.logger.info(f"Group '{name}' updated (no nodes to rebuild)")
             return grp
         
         node_to_initialize = self._get_effected_nodes(all_affected_nodes)
@@ -412,7 +390,7 @@ class Experimenter():
                 dst_path = os.path.join(dst_dir, name)
                 shutil.move(src_path, dst_path)
         grp.save_info()
-        print(f"✅ Group '{name}' updated, {len(node_to_initialize)} node(s) affected")
+        self.logger.info(f"Group '{name}' updated, {len(node_to_initialize)} node(s) affected")
         self._save()
         return grp
 
@@ -420,9 +398,9 @@ class Experimenter():
         self._validate_name(name_to)
 
         if name_from not in self.grps:
-            raise ValueError("")
+            raise ValueError(f"Group '{name_from}' not found")
         if name_to in self.grps:
-            raise ValueError("")
+            raise ValueError(f"Group '{name_to}' already exists")
             
         grp = self.grps[name_from]
         old_grp_path = grp.path
@@ -491,7 +469,7 @@ class Experimenter():
         # grps 딕셔너리에서 제거
         del self.grps[name]
 
-        print(f"✅ Group '{name}' removed")
+        self.logger.info(f"Group '{name}' removed")
         self._save()
 
     def get_parents(self, node_name):
@@ -565,13 +543,13 @@ class Experimenter():
             grp = self.grps[grp_name]
             if name in grp.nodes:
                 grp.nodes.remove(name)
-                print(f"  ├─ Removed '{name}' from group '{grp_name}'")
+                self.logger.info(f"Removed '{name}' from group '{grp_name}'")
 
         node.remove()
         # nodes 딕셔너리에서 제거
         del self.nodes[name]
 
-        print(f"✅ Node '{name}' removed")
+        self.logger.info(f"Node '{name}' removed")
         self._save()
 
     def finalize(self, nodes):
@@ -589,7 +567,7 @@ class Experimenter():
         for i in node_names:
             node = self.nodes[i]
             if type(node) != RootNode and node.grp.role == 'exp' and node.status == 'built':
-                print(f"  ├─ Finalize '{i}'")
+                self.logger.info(f"Finalize '{i}'")
                 node.finalize()
 
     def _update_output_edges(self, node_name, old_edges, new_edges):
@@ -623,10 +601,10 @@ class Experimenter():
         self._validate_name(name)
 
         if name in self.grps:
-            raise ValueError("")
+            raise ValueError(f"Name '{name}' already exists as a group")
 
         if grp not in self.grps:
-            raise ValueError("")
+            raise ValueError(f"Group '{grp}' not found")
         
         self._check_edges(edges)
 
@@ -712,7 +690,7 @@ class Experimenter():
         if is_update:
             descendants = self._find_descendants(name)
             if descendants:
-                print(f"  └─ Effeced {len(descendants)} dependent node(s): {sorted(descendants)}")
+                self.logger.info(f"Effected {len(descendants)} dependent node(s): {sorted(descendants)}")
                 for i in descendants:
                     self.nodes[i].initialize()
 
@@ -729,9 +707,9 @@ class Experimenter():
                 old_grp = self.grps[old_grp_name]
                 if name in old_grp.nodes:
                     old_grp.nodes.remove(name)
-                    print(f"  ├─ Removed '{name}' from group '{old_grp_name}'")
+                    self.logger.info(f"Removed '{name}' from group '{old_grp_name}'")
             if grp_name is not None:
-                print(f"  └─ Moved '{name}' to group '{grp_name}'")
+                self.logger.info(f"Moved '{name}' to group '{grp_name}'")
 
         self.nodes[name] = node
         self._save()
@@ -751,17 +729,33 @@ class Experimenter():
         target_nodes = [
             i for i in self._get_effected_nodes([None]) if type(i) != RootNode and i.grp.role == 'pipe' and (i.name in node_names and (i.status is None or rebuild))
         ]
-        print(f"🔄 Building {len(target_nodes)} node(s)")
+        self.logger.info(f"Building {len(target_nodes)} node(s)")
         for node in target_nodes:
             node.start_build()
-        for i in range(self.get_n_splits()):
-            for node in target_nodes:
-                print(f"  ├─ Building '{node.name}'...")
-                node.build_idx(i)
-        print(f"🔄 Building {len(target_nodes)} node(s)")
+        n_splits = self.get_n_splits()
+        self.logger.start_progress("Build", n_splits)
+        try:
+            for i in range(n_splits):
+                self.logger.update_progress(i)
+                self.logger.start_progress("Node", len(target_nodes))
+                for ni, node in enumerate(target_nodes):
+                    self.logger.update_progress(ni)
+                    self.logger._progress[-1][0] = node.name
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        node.build_idx(i)
+                        for w in caught:
+                            self.logger.warning(f"[{node.name}] fold {i}: {w.category.__name__}: {w.message}")
+                self.logger.end_progress(len(target_nodes))
+            self.logger.end_progress(n_splits)
+        except Exception as e:
+            self.logger.clear_progress()
+            self.logger.info(f"Build failed at fold {i}, node '{node.name}': {type(e).__name__}: {e}")
+            self.logger.info(traceback.format_exc())
+            raise
         for node in target_nodes:
             node.end_build()
-        print("✅ Build complete!")
+        self.logger.info(f"Build complete: {len(target_nodes)} node(s)")
     
     def exp(self, nodes = None, retry = False):
         if nodes is None:
@@ -777,7 +771,7 @@ class Experimenter():
         target_nodes = [
             i for i in self._get_effected_nodes([None]) if type(i) != RootNode and i.grp.role == 'exp' and (i.name in node_names and (i.status is None or retry))
         ]
-        print(f"🔄 Experimenting {len(target_nodes)} node(s)")
+        self.logger.info(f"Experimenting {len(target_nodes)} node(s)")
 
         # start_experiment for all nodes
         for node in target_nodes:
@@ -792,37 +786,54 @@ class Experimenter():
                 v._start(node.name)
 
         # experiment loop
-        for i in range(self.get_n_splits()):
-            print(f"{i} fold")
-            # prepare target metrics data
-            target_metrics = {
-                k: v._get_data(i) for k, v in self.metric.items()
-            }
+        n_splits = self.get_n_splits()
+        self.logger.start_progress("Exp", n_splits)
+        try:
+            for i in range(n_splits):
+                self.logger.update_progress(i)
+                # prepare target metrics data
+                target_metrics = {
+                    k: v._get_data(i) for k, v in self.metric.items()
+                }
 
-            for node in target_nodes:
-                print(f"  ├─ Experimenting '{node.name}'...")
-                result_iter = node.experiment(i)
+                self.logger.start_progress("Node", len(target_nodes))
+                for ni, node in enumerate(target_nodes):
+                    self.logger.update_progress(ni)
+                    self.logger._progress[-1][0] = node.name
+                    with warnings.catch_warnings(record=True) as caught:
+                        warnings.simplefilter("always")
+                        result_iter = node.experiment(i)
 
-                stacks = {k: list() for k in self.stacking.keys()}
-                sub_metrics = {k: list() for k in self.metric.keys()}
+                        stacks = {k: list() for k in self.stacking.keys()}
+                        sub_metrics = {k: list() for k in self.metric.keys()}
 
-                for n, result_data in enumerate(result_iter):
-                    # collect metrics
+                        for n, result_data in enumerate(result_iter):
+                            # collect metrics
+                            for k, v in self.metric.items():
+                                sub_metric = v._get_metric(target_metrics[k][n], result_data)
+                                sub_metric = {k_sub: v_sub for k_sub, v_sub in sub_metric.items()}
+                                sub_metrics[k].append(sub_metric)
+                            # collect stacking data
+                            for k, v in self.stacking.items():
+                                stacks[k].append(v._get_valid(result_data))
+
+                        for w in caught:
+                            self.logger.warning(f"[{node.name}] fold {i}: {w.category.__name__}: {w.message}")
+
+                    # set metrics
                     for k, v in self.metric.items():
-                        sub_metric = v._get_metric(target_metrics[k][n], result_data)
-                        sub_metric = {k_sub: v_sub for k_sub, v_sub in sub_metric.items()}
-                        sub_metrics[k].append(sub_metric)
-                    # collect stacking data
+                        v._set_metric(node.name, i, sub_metrics[k])
+                    # aggregate and stack
                     for k, v in self.stacking.items():
-                        stacks[k].append(v._get_valid(result_data))
-
-                # set metrics
-                for k, v in self.metric.items():
-                    v._set_metric(node.name, i, sub_metrics[k])
-                # aggregate and stack
-                for k, v in self.stacking.items():
-                    stk = v._aggregate(iter(stacks[k]))
-                    v._stack(node.name, i, stk)
+                        stk = v._aggregate(iter(stacks[k]))
+                        v._stack(node.name, i, stk)
+                self.logger.end_progress(len(target_nodes))
+            self.logger.end_progress(n_splits)
+        except Exception as e:
+            self.logger.clear_progress()
+            self.logger.info(f"Exp failed at fold {i}, node '{node.name}': {type(e).__name__}: {e}")
+            self.logger.info(traceback.format_exc())
+            raise
 
         # end_experiment for all nodes
         for node in target_nodes:
@@ -836,58 +847,7 @@ class Experimenter():
             for node in target_nodes:
                 v._end(node.name)
 
-        print("✅ Experimentation complete!")
-
-    def analyze(self, analyzers, nodes=None):
-        """built 상태의 노드에 대해 분석 수행
-
-        Args:
-            analyzers: Analyzer 인스턴스 또는 리스트
-            nodes: 분석할 노드 (None이면 모든 built 노드)
-        """
-        if not isinstance(analyzers, list):
-            analyzers = [analyzers]
-
-        # built 상태 노드만 필터링
-        if nodes is None:
-            node_names = list(self.nodes.keys())
-        elif isinstance(nodes, list):
-            node_names = [n for n in nodes if n in self.nodes]
-        elif isinstance(nodes, str):
-            pat = re.compile(nodes)
-            node_names = [k for k in self.nodes.keys() if k is not None and pat.search(k)]
-        else:
-            raise ValueError(f"nodes must be None, list, or str, got {type(nodes)}")
-
-        target_nodes = [
-            self.nodes[n] for n in node_names
-            if n is not None and self.nodes[n].status == 'built'
-        ]
-
-        if not target_nodes:
-            print("No built nodes to analyze")
-            return
-
-        print(f"🔍 Analyzing {len(target_nodes)} node(s)...")
-
-        # _start for all analyzers
-        for analyzer in analyzers:
-            for node in target_nodes:
-                analyzer._start(node.name)
-
-        # analyze loop
-        for node in target_nodes:
-            print(f"  ├─ Analyzing '{node.name}'...")
-            for idx in range(self.get_n_splits()):
-                for analyzer in analyzers:
-                    analyzer._analyze(node.name, idx)
-
-        # _end for all analyzers
-        for analyzer in analyzers:
-            for node in target_nodes:
-                analyzer._end(node.name)
-
-        print("✅ Analysis complete!")
+        self.logger.info(f"Experimentation complete: {len(target_nodes)} node(s)")
 
     def get_data(self, idx, edges):
         def ret_data_func(data_list):
@@ -977,27 +937,28 @@ class Experimenter():
         return self.nodes[node].get_data_valid(idx, var)
 
     def get_node_info(self):
-        """노드들의 정보를 출력"""
-        print("📊 Experiment Pipeline Summary")
-        print("=" * 50)
+        lines = [f"# Experiment Pipeline Summary\n"]
+        lines.append(f"- **Root**: {type(self.root).__name__}\n")
 
         for name, node in self.nodes.items():
             if name is None:
-                print(f"Root Node: {type(self.root).__name__}")
-            else:
-                processor_name = node.processor.__name__
-                edges_info = ", ".join([
-                    f"{n or 'Root'}{f'[{v}]' if v else ''}"
-                    for n, v in node.edges
-                ])
-                print(f"\nNode: '{name}'")
-                print(f"  ├─ Processor: {processor_name}")
-                print(f"  ├─ Method: {node.method}")
-                print(f"  ├─ Edges: {edges_info}")
+                continue
+            processor_name = node.processor.__name__
+            edges_info = ", ".join([
+                f"{n or 'Root'}{f'[{v}]' if v else ''}"
+                for n, v in node.edges
+            ])
+            lines.append(f"## {name}")
+            lines.append(f"- **Processor**: {processor_name}")
+            lines.append(f"- **Method**: {node.method}")
+            lines.append(f"- **Edges**: {edges_info}")
 
-                descendants = self._find_descendants(name)
-                if descendants:
-                    print(f"  └─ Descendants: {sorted(descendants)}")
+            descendants = self._find_descendants(name)
+            if descendants:
+                lines.append(f"- **Descendants**: {sorted(descendants)}")
+            lines.append("")
+
+        return "\n".join(lines)
 
     def desc_spec(self):
         """실험 스펙을 Markdown으로 반환"""
@@ -1168,8 +1129,7 @@ class Experimenter():
         from ._metric import Metric
         from ._stacking import Stacking
 
-        filepath = Path(filepath) 
-        print(f"📂 Loading Experimenter from {filepath}...")
+        filepath = Path(filepath)
         with open(filepath / '__exp.pkl', 'rb') as f:
             save_data = pkl.load(f)
 
@@ -1194,14 +1154,12 @@ class Experimenter():
         exp.exp_id = save_data['exp_id']
 
         # NodeGroup 복원 (로딩 순서대로)
-        print(f"   Loading {len(save_data['grp_load_order'])} group(s)...")
         for grp_name, parent_grp_name in save_data['grp_load_order']:
             parent_grp = exp.grps.get(parent_grp_name) if parent_grp_name else None
             grp = NodeGroup.load(exp, grp_name, parent_grp)
             exp.grps[grp_name] = grp
 
         # Node 복원 (로딩 순서대로)
-        print(f"   Loading {len(save_data['node_load_order'])} node(s)...")
         for node_name, grp_name in save_data['node_load_order']:
             grp = exp.grps[grp_name]
             node = Node.load(exp, grp, node_name)
@@ -1218,71 +1176,87 @@ class Experimenter():
                         parent_node.output_edges.append(node_name)
 
         # Metric 복원
-        print(f"   Loading {len(save_data['metric_keys'])} metric(s)...")
         for metric_name in save_data['metric_keys']:
             metric = Metric.load_from_file(exp, metric_name)
             exp.metric[metric_name] = metric
 
         # Stacking 복원
-        print(f"   Loading {len(save_data['stacking_keys'])} stacking(s)...")
         for stacking_name in save_data['stacking_keys']:
             stacking = Stacking.load_from_file(exp, stacking_name)
             exp.stacking[stacking_name] = stacking
 
-        print(f"✅ Experimenter loaded successfully")
-        print(f"   - {len(exp.nodes) - 1} node(s)")
-        print(f"   - {len(exp.grps)} group(s)")
-        print(f"   - {len(exp.train_idx_list)} fold(s)")
+        exp.logger.info(f"Loaded: {len(exp.nodes) - 1} node(s), {len(exp.grps)} group(s), {len(exp.train_idx_list)} fold(s)")
 
         return exp
 
-def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=None, title=None, stacking=None, path=None):
+    def get_result(self, node, idx, result, params = {}):
+        return self.nodes[node].get_result(idx, result, params)
+
+    def get_results(self, node, result, params = {}):
+        for i in range(self.get_n_splits()):
+            yield list(
+                self.get_result(node, i, result, params)
+            )
+
+    def get_results_merge(self, node, result, params = {}, agg_inner = True, agg_outer = False):
+        if agg_outer and not agg_inner:
+            raise ValueError("agg_outer requires agg_inner to be True")
+        if not self.nodes[node].adapter_.result_objs[result][1]:
+            raise ValueError(f"Result '{result}' is not mergeable across folds")
+        l = list()
+        for no, i in enumerate(self.get_results(node, result, params)):
+            l.append(pd.concat([j.rename(no_i) for no_i, j in enumerate(i)], axis = 1).stack().rename(no))
+        df = pd.concat(l, axis=1)
+        if agg_inner:
+            df = df.groupby(level=[i for i in range(len(df.index.levels) - 1)]).mean()
+            if agg_outer:
+                return df.mean(axis=1)
+        return df
+
+def create_like(exp, data, path, data_names=None, sp=None, sp_v=None, splitter_params=None, title=None, data_key=None):
     """기존 Experimenter의 구조를 복제하여 새로운 Experimenter 생성
 
     Args:
         exp: 구조를 복제할 원본 Experimenter
         data: 새로운 데이터
+        path: 작업 디렉토리 경로
         data_names: 새로운 데이터의 컬럼명 (None이면 자동)
         sp: 외부 splitter (None이면 원본과 동일)
-        sp_v: 내부 splitter (None이면 원본과 동일)
+        sp_v: 내부 splitter (None이면 원본과 동일, "remove"이면 제거)
         splitter_params: splitter에 전달할 파라미터 (None이면 원본과 동일)
         title: 실험 타이틀 (None이면 원본과 동일)
-        stacking: stacking 설정 (None이면 원본과 동일)
-        path: 작업 디렉토리 경로 (None이면 원본과 동일)
+        data_key: 데이터 식별자 (None이면 원본과 동일)
 
     Returns:
         Experimenter: 새로 생성된 Experimenter 인스턴스
     """
-    print("🔄 Creating new Experimenter with same structure...")
+    exp.logger.info("Creating new Experimenter with same structure...")
 
     if sp is None:
         sp = exp.sp
     if sp_v is None:
-        if sp_v == "remove":
-            sp_v = None
-        else:
-            sp_v = exp.sp_v
+        sp_v = exp.sp_v
+    elif sp_v == "remove":
+        sp_v = None
     if splitter_params is None:
         splitter_params = exp.splitter_params.copy() if exp.splitter_params else None
     if title is None:
         title = exp.title
-    if stacking is None:
-        stacking = exp.stacking
-    if path is None:
-        path = exp.path
+    if data_key is None:
+        data_key = exp.data_key
 
     # 새 Experimenter 생성
     new_exp = Experimenter(
         data,
+        path=path,
         data_names=data_names,
         sp=sp,
         sp_v=sp_v,
         splitter_params=splitter_params,
         title=title,
-        stacking=stacking,
-        path=path
+        data_key=data_key
     )
-    print(f"   ├─ Created base Experimenter with {len(new_exp.train_idx_list)} fold(s)")
+    new_exp.logger.info(f"Created base Experimenter with {len(new_exp.train_idx_list)} fold(s)")
 
     # 그룹 복제 (부모-자식 관계를 유지하기 위해 위상 정렬)
     # 1. 최상위 그룹부터 BFS로 복제
@@ -1293,8 +1267,9 @@ def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=
 
     def clone_group_recursive(orig_grp, parent_grp_name=None):
         """그룹을 재귀적으로 복제"""
-        new_grp = new_exp.add_grp(
+        new_grp = new_exp.set_grp(
             name=orig_grp.name,
+            role=orig_grp.role,
             processor=orig_grp.processor,
             edges=orig_grp.edges[:],  # 리스트 복사
             X=orig_grp.X,
@@ -1314,7 +1289,7 @@ def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=
     for grp in top_level_grps:
         clone_group_recursive(grp)
 
-    print(f"   ├─ Cloned {len(exp.grps)} group(s)")
+    new_exp.logger.info(f"Cloned {len(exp.grps)} group(s)")
 
     # 노드 복제 (위상 정렬: Root부터 BFS)
     # 1. 노드의 우선순위 계산 (BFS)
@@ -1330,13 +1305,10 @@ def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=
         node_priorities[current_node] = priority
 
         # current_node를 edge로 참조하는 child 노드들 찾기
-        for name, node in exp.nodes.items():
+        for name in current_node.output_edges :
             if name is not None and name not in node_priorities:
-                # 이 노드의 edges를 확인해서 current_node를 참조하는지 체크
-                for edge_name, _ in node.edges:
-                    if edge_name == current_node:
-                        queue.append((name, priority + 1))
-                        break
+                queue.append((name, priority + 1))
+                break
 
     # 우선순위 순으로 노드 정렬 (Root 제외)
     sorted_nodes = sorted(
@@ -1360,7 +1332,6 @@ def create_like(exp, data, data_names=None, sp=None, sp_v=None, splitter_params=
                 params=org['params'].copy() if org['params'] else {}
             )
 
-    print(f"   └─ Cloned {len(sorted_nodes)} node(s)")
-    print("✅ Structure cloning complete!")
+    new_exp.logger.info(f"Structure cloning complete: {len(exp.grps)} group(s), {len(sorted_nodes)} node(s)")
 
     return new_exp

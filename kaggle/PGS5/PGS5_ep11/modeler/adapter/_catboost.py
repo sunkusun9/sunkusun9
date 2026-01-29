@@ -14,9 +14,7 @@ class CatBoostAdapter(ModelAdapter):
     CatBoost도 eval_set을 지원합니다.
     """
 
-    result_objs = ['feature_importances_pvc', 'feature_importances_interaction', 'evals_result', 'trees']
-
-    def get_fit_params(self, X_train, y_train=None, X_eval=None, y_eval=None, params=None):
+    def get_fit_params(self, X_train, y_train=None, X_eval=None, y_eval=None, params=None, logger = None):
         """CatBoost의 fit 파라미터 구성"""
         fit_params = {}
 
@@ -42,27 +40,18 @@ class CatBoostAdapter(ModelAdapter):
 
         return fit_params
 
-    def get_result(self, processor, name):
-        if name == 'feature_importances_pvc':
-            return self._get_feature_importances_pvc(processor)
-        elif name == 'feature_importances_interaction':
-            return self._get_feature_importances_interaction(processor)
-        elif name == 'evals_result':
-            return self._get_evals_result(processor)
-        elif name == 'trees':
-            return self._get_trees(processor)
-        raise ValueError(f"{name} Unsupported result")
-
-    def _get_feature_importances_pvc(self, processor):
+    @staticmethod
+    def _get_feature_importances_pvc(processor):
         obj = processor.obj
         input_vars = list(processor.X_) if hasattr(processor, 'X_') and processor.X_ is not None else list(range(obj.feature_count_))
 
-        return pd.DataFrame(
-            [obj.get_feature_importance(type='PredictionValuesChange')],
-            columns=input_vars
+        return pd.Series(
+            obj.get_feature_importance(type='PredictionValuesChange'),
+            index=input_vars, name = 'PredictionValuesChange'
         )
 
-    def _get_feature_importances_interaction(self, processor):
+    @staticmethod
+    def _get_feature_importances_interaction(processor):
         obj = processor.obj
         input_vars = list(processor.X_) if hasattr(processor, 'X_') and processor.X_ is not None else list(range(obj.feature_count_))
 
@@ -72,15 +61,27 @@ class CatBoostAdapter(ModelAdapter):
         ).assign(
             feat1=lambda x: x['feat1'].astype('int').apply(lambda y: input_vars[y]),
             feat2=lambda x: x['feat2'].astype('int').apply(lambda y: input_vars[y]),
-        )
+        ).set_index(['feat1', 'feat2'])['importance']
 
-    def _get_evals_result(self, processor):
+    @staticmethod
+    def _get_evals_result(processor):
         obj = processor.obj
-        return obj.get_evals_result() if hasattr(obj, 'get_evals_result') else {}
+        evals_result = obj.get_evals_result() if hasattr(obj, 'get_evals_result') else {}
+        return pd.concat(
+            [pd.DataFrame(v).stack().rename(k) for k, v in evals_result.items()], axis=1
+        ).stack()
 
-    def _get_trees(self, processor):
+    @staticmethod
+    def _get_trees(processor):
         obj = processor.obj
         with tempfile.NamedTemporaryFile(suffix=".json") as f:
             obj.save_model(f.name, format="json")
             trees = json.load(f).get('oblivious_trees', [])
         return trees
+
+CatBoostAdapter.result_objs = {
+    'feature_importances_pvc': (CatBoostAdapter._get_feature_importances_pvc, True),
+    'feature_importances_interaction': (CatBoostAdapter._get_feature_importances_interaction, True),
+    'evals_result': (CatBoostAdapter._get_evals_result, True), 
+    'trees': (CatBoostAdapter._get_trees, False)
+}

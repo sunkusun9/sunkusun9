@@ -184,7 +184,7 @@ class Stacking:
         return node_names
 
     def reset_nodes(self, nodes):
-        for node in self._get_nodes(nodes):
+        for node in nodes:
             # 파일 삭제
             file_path = self.stacking_dir / f"{node}.pkl"
             if file_path.exists():

@@ -54,7 +54,8 @@ class TransformProcessor():
 
     def fit(self, train, valid):
         self.X_ = resolve_columns(train, self.X, self.y)
-        self.obj = self.transformer(**self.params)
+        params = self.adapter.get_params(self.params, logger = self.node.experimenter.logger) if self.adapter is not None else self.params
+        self.obj = self.transformer(**params)
         fit_params = {}
 
         # DataWrapper에서 컬럼 선택
@@ -64,9 +65,9 @@ class TransformProcessor():
             if self.adapter is not None:
                 valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
                 if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X)
+                    fit_params = self.adapter.get_fit_params(X_train = train_X, logger = self.node.experimenter.logger)
                 else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, X_eval = valid_X)
+                    fit_params = self.adapter.get_fit_params(X_train = train_X, X_eval = valid_X, logger = self.node.experimenter.logger)
             self.obj.fit(train_X, **fit_params)
         else:
             train_y = unwrap(train.select_columns(self.y))
@@ -74,9 +75,9 @@ class TransformProcessor():
                 valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
                 valid_y = unwrap(valid.select_columns(self.y)) if valid is not None else None
                 if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y)
+                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, logger = self.node.experimenter.logger)
                 else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, X_eval = valid_X, y_eval = valid_y)
+                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, X_eval = valid_X, y_eval = valid_y, logger = self.node.experimenter.logger)
             self.obj.fit(train_X, train_y, **fit_params)
         # 컬럼명 결정 (get_feature_names_out이 있으면 사용)
         if hasattr(self.obj, 'get_feature_names_out'):
@@ -91,7 +92,8 @@ class TransformProcessor():
 
     def fit_process(self, train, valid):
         self.X_ = resolve_columns(train, self.X, self.y)
-        self.obj = self.transformer(**self.params)
+        params = self.adapter.get_params(self.params, logger = self.node.experimenter.logger) if self.adapter is not None else self.params
+        self.obj = self.transformer(**params)
         fit_params = {}
 
         # DataWrapper에서 native로 변환
@@ -102,9 +104,9 @@ class TransformProcessor():
             if self.adapter is not None:
                 valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
                 if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X)
+                    fit_params = self.adapter.get_fit_params(X_train = train_X, logger = self.node.experimenter.logger)
                 else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, X_eval = valid_X)
+                    fit_params = self.adapter.get_fit_params(X_train = train_X, X_eval = valid_X, logger = self.node.experimenter.logger)
             result = self.obj.fit_transform(train_X, **fit_params)
         else:
             train_y = unwrap(train.select_columns(self.y))
@@ -112,9 +114,9 @@ class TransformProcessor():
                 valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
                 valid_y = unwrap(valid.select_columns(self.y)) if valid is not None else None
                 if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y)
+                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, logger = self.node.experimenter.logger)
                 else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, X_eval = valid_X, y_eval = valid_y)
+                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, X_eval = valid_X, y_eval = valid_y, logger = self.node.experimenter.logger)
             result = self.obj.fit_transform(train_X, train_y, **fit_params)
 
         # train의 Wrapper 타입으로 변환
@@ -156,7 +158,7 @@ class PredictProcessor():
     def fit(self, train, valid):
         self.X_ = resolve_columns(train, self.X, self.y)
         # adapter가 있으면 params 조정 (callbacks 등 설정)
-        params = self.adapter.get_params(self.params) if self.adapter is not None else self.params
+        params = self.adapter.get_params(self.params, logger = self.node.experimenter.logger) if self.adapter is not None else self.params
         self.obj = self.estimator(**params)
         fit_params = {}
 
@@ -167,9 +169,9 @@ class PredictProcessor():
             if self.adapter is not None:
                 valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
                 if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X)
+                    fit_params = self.adapter.get_fit_params(X_train = train_X, logger = self.node.experimenter.logger)
                 else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, X_eval = valid_X)
+                    fit_params = self.adapter.get_fit_params(X_train = train_X, X_eval = valid_X, logger = self.node.experimenter.logger)
             # 비지도학습 with specific columns
             self.obj.fit(train_X, **fit_params)
         else:
@@ -178,9 +180,9 @@ class PredictProcessor():
                 valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
                 valid_y = unwrap(valid.select_columns(self.y)) if valid is not None else None
                 if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y)
+                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, logger = self.node.experimenter.logger)
                 else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, X_eval = valid_X, y_eval = valid_y)
+                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, X_eval = valid_X, y_eval = valid_y, logger = self.node.experimenter.logger)
             # 지도학습
             self.obj.fit(train_X, train_y, **fit_params)
 
@@ -211,7 +213,7 @@ class PredictProcessor():
     def fit_process(self, train, valid):
         self.X_ = resolve_columns(train, self.X, self.y)
         # adapter가 있으면 params 조정 (callbacks 등 설정)
-        params = self.adapter.get_params(self.params) if self.adapter is not None else self.params
+        params = self.adapter.get_params(self.param, logger = self.node.experimenter.loggers) if self.adapter is not None else self.params
         self.obj = self.estimator(**params)
         fit_params = {}
 
@@ -223,9 +225,9 @@ class PredictProcessor():
             if self.adapter is not None:
                 valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
                 if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X)
+                    fit_params = self.adapter.get_fit_params(X_train = train_X, logger = self.node.experimenter.logger)
                 else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, X_eval = valid_X)
+                    fit_params = self.adapter.get_fit_params(X_train = train_X, X_eval = valid_X, logger = self.node.experimenter.logger)
             # 비지도학습 with specific columns
             predictions = self.obj.fit_predict(train_X, **fit_params)
         else:
@@ -235,9 +237,9 @@ class PredictProcessor():
                 valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
                 valid_y = unwrap(valid.select_columns(self.y)) if valid is not None else None
                 if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y)
+                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, logger = self.node.experimenter.logger)
                 else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, X_eval = valid_X, y_eval = valid_y)
+                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, X_eval = valid_X, y_eval = valid_y, logger = self.node.experimenter.logger)
             predictions = self.obj.fit_predict(train_X, train_y, **fit_params)
 
         # 컬럼명 결정

@@ -265,20 +265,20 @@ class Node():
 
     def start_experiment(self):
         if self.status == "finalized":
-            raise RuntimeError("")
+            raise RuntimeError(f"Node '{self.name}' is finalized and cannot be re-experimented")
         else:
             if not os.path.isdir(self.path):
                 os.makedirs(self.path, exist_ok = True)
     
     def experiment(self, idx, include_output = True, finalize = False):
         if self.grp.role != 'exp':
-            raise RuntimeError("")
+            raise RuntimeError(f"Node '{self.name}' is not an exp node (role='{self.grp.role}')")
         filename = self.path / ('obj' + str(idx) + '.pkl')
         if self.status == "built":
             with open(filename, 'rb') as f:
                 objs = pkl.load(f)
         elif self.status == "finalized":
-            raise RuntimeError("")
+            raise RuntimeError(f"Node '{self.name}' is finalized and cannot be re-experimented")
         
         objs = self._build_idx(idx)
         ret = list()
@@ -309,7 +309,7 @@ class Node():
 
     def finalize(self):
         if self.status != 'built':
-            raise RuntimeError("")
+            raise RuntimeError(f"Node '{self.name}' must be built before finalize (status='{self.status}')")
 
         if os.path.isdir(self.path):
             shutil.rmtree(self.path)
@@ -317,13 +317,18 @@ class Node():
         self.save_info()
     
     def get_exp_obj(self, idx):
+        if self.status != 'built':
+            raise RuntimeError(f"Node '{self.name}' must be built before accessing objects (status='{self.status}')")
+
+        if self.grp.role == 'pipe':
+            return self.objs_[idx]
         filename = self.path / ('obj' + str(idx) + '.pkl')
         if os.path.isfile(filename):
             with open(filename, 'rb') as f:
                 objs = pkl.load(f)
             return objs
         else:
-            raise RuntimeError("")
+            raise RuntimeError(f"Node '{self.name}' object file not found: {filename}")
 
     def adhoc(self, idx, results):
         return list(
@@ -385,6 +390,13 @@ class Node():
 
         return info
 
+    def get_result(self, idx, result, params={}):
+        if result not in self.adapter_.result_objs:
+            raise ValueError(f"{result} Unsupported result")
+        result_func = self.adapter_.result_objs[result][0]
+        for i in self.get_exp_obj(idx):
+            yield result_func(i[0], **params)
+    
     @classmethod
     def load(cls, experimenter, grp, name):
         """저장된 노드 정보를 불러와서 Node 인스턴스 생성

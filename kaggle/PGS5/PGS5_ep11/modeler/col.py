@@ -53,3 +53,15 @@ def ohe_drop_first(columns, org_X):
             mask.append(False)
 
     return mask
+
+def get_origin_var(columns, org_X):
+    l = list()
+    for col in columns:
+        suffix = col.split('__', 1)[-1]
+        org = "Unknown"
+        for org_var in org_X:
+            if suffix.startswith(f'{org_var}_') or suffix == org_var:
+                org = org_var
+                break
+        l.append(org)
+    return l

@@ -6,6 +6,7 @@ from abc import ABC, abstractmethod
 
 
 class ModelAdapter(ABC):
+    result_objs = {}
     """Abstract base class for model adapters
 
     각 머신러닝 프레임워크별로 eval_set 처리 방식이 다르므로,
@@ -30,10 +31,7 @@ class ModelAdapter(ABC):
         self.eval_mode = eval_mode
         self.verbose = verbose
 
-    def get_result(self, processor, name):
-        raise ValueError(f"{name} Unsupported result")
-
-    def get_fit_params(self, X_train, y_train=None, X_eval=None, y_eval=None, params=None):
+    def get_fit_params(self, X_train, y_train=None, X_eval=None, y_eval=None, params=None, logger = None):
         """모델의 fit()에 전달할 파라미터를 구성
 
         Args:
@@ -49,7 +47,7 @@ class ModelAdapter(ABC):
         """
         return {}
 
-    def get_params(self, params):
+    def get_params(self, params, logger = None):
         """모델 생성자에 전달할 파라미터를 조정
 
         Args:
