@@ -1,27 +1,11 @@
 """
 Column selection helper functions for resolve_columns
 """
+import re
 
-def ohe_drop_first(columns, org_X):
-    """OneHotEncoder로 생성된 컬럼에서 각 원래 변수의 첫 번째 더미 변수를 제거
-
-    Args:
-        columns: OneHotEncoding 후 컬럼명 리스트
-                 형식: {처리단계명}__{원래변수명}_{카테고리값}
-        org_X: 원래 변수명 리스트
-
-    Returns:
-        boolean list: True면 해당 컬럼을 선택, False면 제외
-
-    Example:
-        >>> columns = ['stage__color_red', 'stage__color_blue', 'stage__color_green',
-        ...            'stage__size_S', 'stage__size_M', 'stage__size_L']
-        >>> org_X = ['color', 'size']
-        >>> ohe_drop_first(columns, org_X)
-        [False, True, True, False, True, True]
-        # 결과: ['stage__color_blue', 'stage__color_green', 'stage__size_M', 'stage__size_L']
-    """
+def ohe_drop_first(columns, processor):
     # 각 원래 변수에 대해 첫 번째 컬럼을 만났는지 추적
+    org_X = processor.X_
     first_seen = {var: False for var in org_X}
 
     mask = []
@@ -52,6 +36,57 @@ def ohe_drop_first(columns, org_X):
         if not matched:
             mask.append(False)
 
+    return mask
+
+def _polynomial_feature_names(input_features, degree=2, interaction_only=False, include_bias=True):
+    from itertools import combinations, combinations_with_replacement
+    n_features = len(input_features)
+    feature_names = []
+    if include_bias:
+        feature_names.append("1")
+    comb_func = combinations if interaction_only else combinations_with_replacement
+    for d in range(1, degree + 1):
+        for comb in comb_func(range(n_features), d):
+            counts = {}
+            for idx in comb:
+                counts[idx] = counts.get(idx, 0) + 1
+            terms = []
+            for idx, power in counts.items():
+                name = input_features[idx]
+                if power > 1:
+                    name = f"{name}^{power}"
+                terms.append(name)
+            feature_names.append(" ".join(terms))
+    return feature_names
+
+def subset_poly(columns, vars, processor=None):
+    obj = processor.obj
+    degree = obj.degree if hasattr(obj, 'degree') else 2
+    interaction_only = obj.interaction_only if hasattr(obj, 'interaction_only') else False
+    include_bias = obj.include_bias if hasattr(obj, 'include_bias') else True
+
+    org_X = processor.X_
+    vars_ = list()
+    for x in org_X:
+        for i in vars:
+            if i == x or re.match(i, x):
+                vars_.append(x)
+                break
+
+    subset_names = set(_polynomial_feature_names(
+        vars_, degree=degree, interaction_only=interaction_only, include_bias=include_bias
+    ))
+
+    node_name = processor.node.name
+    prefix = f"{node_name}__"
+
+    mask = []
+    for col in columns:
+        if col.startswith(prefix):
+            suffix = col[len(prefix):]
+            mask.append(suffix in subset_names)
+        else:
+            mask.append(False)
     return mask
 
 def get_origin_var(columns, org_X):

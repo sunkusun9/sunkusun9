@@ -61,12 +61,12 @@ class LightGBMAdapter(ModelAdapter):
         return fit_params
 
     @staticmethod
-    def _get_feature_importances(processor, importance_type):
+    def _get_feature_importances(processor):
         obj = processor.obj
         input_vars = list(processor.X_) if hasattr(processor, 'X_') and processor.X_ is not None else list(range(obj.n_features_in_))
 
         return pd.Series(
-            obj.booster_.feature_importance(importance_type=importance_type),
+            obj.feature_importances_,
             index=input_vars, name = 'importance'
         )
 
@@ -85,7 +85,7 @@ class LightGBMAdapter(ModelAdapter):
         return dump.get('tree_info', [])
 
 LightGBMAdapter.result_objs = {
-    'feature_importances_pvc': (LightGBMAdapter._get_feature_importances, True),
+    'feature_importances': (LightGBMAdapter._get_feature_importances, True),
     'evals_result': (LightGBMAdapter._get_evals_result, True),
     'trees': (LightGBMAdapter._get_trees, False)
 }

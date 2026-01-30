@@ -3,7 +3,6 @@ from ._base import ModelAdapter
 import pandas as pd
 import numpy as np
 
-
 class LMAdapter(ModelAdapter):
     @staticmethod
     def _get_coef( processor):
@@ -153,7 +152,15 @@ class DecisionTreeAdapter(ModelAdapter):
 
         return pd.DataFrame(tree_structure)
 
+    @staticmethod
+    def _plot_tree(processor, **args):
+        from sklearn.tree import plot_tree
+        obj = processor.obj
+        input_vars = list(processor.X_) if hasattr(processor, 'X_') and processor.X_ is not None else list(range(obj.n_features_in_))
+        plot_tree(obj, feature_names = input_vars, **args)
+
 DecisionTreeAdapter.result_objs = {
     'feature_importances': (DecisionTreeAdapter._get_feature_importances, True),
-    'tree': (DecisionTreeAdapter._get_tree, False)
+    'tree': (DecisionTreeAdapter._get_tree, False), 
+    'plot_tree': (DecisionTreeAdapter._plot_tree, False), 
 }

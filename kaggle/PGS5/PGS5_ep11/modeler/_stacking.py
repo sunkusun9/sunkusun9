@@ -126,8 +126,11 @@ class Stacking:
             raise ValueError(f"Unsupported method: {self.method}")
 
     def _get_valid(self, result_data):
+        selected_cols = resolve_columns(result_data['output_valid'], self.output_var)
+        if len(selected_cols) == 0:
+            return None
         return result_data['output_valid'].select_columns(
-            resolve_columns(result_data['output_valid'], self.output_var)
+            selected_cols
         )
 
     def _start(self, node):
@@ -145,6 +148,10 @@ class Stacking:
     
     def _end(self, node):
         # 중간 결과를 하나의 array로 합침
+        if len(self.stacking[node]) == 0:
+            del self.stacking[node]
+            del self.columns[node]
+            return
         result = np.concatenate(self.stacking[node])
 
         # 데이터와 columns를 함께 pickle로 저장

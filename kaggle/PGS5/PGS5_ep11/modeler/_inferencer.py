@@ -100,7 +100,7 @@ class InferenceNode():
 
             # 필요하면 컬럼 필터링
             if v is not None:
-                X = resolve_columns(result, v, org_X=proc.X_)
+                X = resolve_columns(result, v, processor=proc)
                 result = result.select_columns(X)
 
             results.append(result)

@@ -339,13 +339,25 @@ def desc_node(exp, node_name, direction='TD', show_params=False):
         all_nodes.update(path)
     all_nodes.discard('Root')
 
+    # 노드의 grp 경로를 구하는 헬퍼
+    def get_grp_path(node):
+        if node.grp is None:
+            return node.name
+        parts = []
+        grp = node.grp
+        while grp is not None:
+            parts.insert(0, grp.name)
+            grp = grp.parent_grp
+        parts.append(node.name)
+        return '/'.join(parts)
+
     # 각 노드를 subgraph로 생성
     for name in sorted(all_nodes):
         if name in exp.nodes:
             node = exp.nodes[name]
 
-            # subgraph의 title은 항상 노드 이름만
-            lines.append(f"    subgraph node_{name}[\"{name}\"]")
+            display_name = get_grp_path(node)
+            lines.append(f"    subgraph node_{name}[\"{display_name}\"]")
 
             if show_params:
                 # 파라미터 정보 포맷팅
@@ -395,7 +407,8 @@ def desc_node(exp, node_name, direction='TD', show_params=False):
 
     lines.append("```")
     lines.append("")
-    lines.append(f"**Path from Root to '{node_name}' ({len(paths)} path(s) found)**")
+    target_display = get_grp_path(exp.nodes[node_name])
+    lines.append(f"**Path from Root to '{target_display}' ({len(paths)} path(s) found)**")
 
     return "\n".join(lines)
 

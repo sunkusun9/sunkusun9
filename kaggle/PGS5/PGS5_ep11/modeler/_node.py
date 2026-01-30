@@ -293,6 +293,8 @@ class Node():
                     train_result = train_
                 if train_v is not None:
                     train_v_result = obj.process(train_v)
+                else:
+                    train_v_result = None
                 sub_result['output_train'] = (train_result, train_v_result)
                 sub_result['output_valid'] = obj.process(valid)
             yield sub_result
@@ -310,7 +312,8 @@ class Node():
     def finalize(self):
         if self.status != 'built':
             raise RuntimeError(f"Node '{self.name}' must be built before finalize (status='{self.status}')")
-
+        if hasattr(self, 'objs_') and self.objs_ is not None:
+            del self.objs_
         if os.path.isdir(self.path):
             shutil.rmtree(self.path)
         self.status = "finalized"
@@ -448,8 +451,8 @@ class Node():
         return node
 
     def remove(self):
-        if os.path.isdir(path):
-            shutil.rmtree(path)
+        if os.path.isdir(self.path):
+            shutil.rmtree(self.path)
         filepath = self.grp.path / f'__{self.name}.pkl'
         if os.path.isfile(filepath):
             os.remove(filepath)
@@ -534,7 +537,7 @@ class Node():
 
                 # 필요하면 컬럼 필터링
                 if v is not None:
-                    X = resolve_columns(train_result, v, org_X = obj.X_)
+                    X = resolve_columns(train_result, v, processor=obj)
                     train_result = train_result.select_columns(X)
                     if train_v_result is not None:
                         train_v_result = train_v_result.select_columns(X)
@@ -572,7 +575,7 @@ class Node():
                     train_v_result = None
                 # 필요하면 컬럼 필터링
                 if v is not None:
-                    X = resolve_columns(train_result, v, org_X=obj.X_)
+                    X = resolve_columns(train_result, v, processor=obj)
                     train_result = train_result.select_columns(X)
                     if train_v_result is not None:
                         train_v_result = train_v_result.select_columns(X)
@@ -594,14 +597,19 @@ class Node():
         Yields:
             valid_result: 각 inner fold 모델로 처리된 외부 검증 데이터 결과
         """
+        if self.status != 'built':
+            raise  RuntimeError("")
         if self.cache_idx_v == idx and self.cache_v_param_v == v and self.cache_v is not None:
             def ret_func():
                 for i in self.cache_v:
                     yield i
             return ret_func()
-
         it = self.experimenter.get_data_valid(idx, self.edges)
-        sub = self.objs_[idx]
+        if self.grp.role == "pipe":
+            sub = self.objs_[idx]
+        else:
+            sub = self.get_exp_obj(idx)
+        
         if self.use_cache:
             self._unload_cache()
         def ret_func():
@@ -616,14 +624,14 @@ class Node():
 
                 # 필요하면 컬럼 필터링
                 if v is not None:
-                    X = resolve_columns(valid_result, v, org_X=obj.X_)
+                    X = resolve_columns(valid_result, v, processor=obj)
                     valid_result = valid_result.select_columns(X)
 
                 if self.cache_v is not None:
                     self.cache_v.append(valid_result)
                 yield valid_result
 
-        if self.use_cache:
+        if self.use_cache and self.grp.role == "pipe":
             self.cache_idx_v = idx
             self.cache_v_param_v = v
         return ret_func()

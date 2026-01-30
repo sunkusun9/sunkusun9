@@ -20,9 +20,14 @@ from ._logger import DefaultLogger
 
 class Experimenter():
     def __init__(
-            self, data, path, data_names=None, sp=ShuffleSplit(n_splits=1, random_state=1), sp_v=None, splitter_params=None, title=None, data_key=None,
+            self, data, path, data_names = None, sp = ShuffleSplit(n_splits=1, random_state=1), sp_v=None, splitter_params=None, title=None, data_key=None,
             logger = DefaultLogger(level=['info', 'progress'])
         ):
+        self.logger = logger
+        self.path = Path(path)
+        if not os.path.exists(path):
+            self.path.mkdir(parents=True, exist_ok=True)
+            self.logger.info(f"📁 Created directory: {self.path}")
         self.train_idx_list = list()
         self.valid_idx_list = list()
         data_native = data
@@ -34,11 +39,6 @@ class Experimenter():
 
         # data 식별자 (load 시 검증용)
         self.data_key = data_key
-        self.logger = logger
-        self.path = Path(path)
-        if not self.path.exists():
-            self.path.mkdir(parents=True, exist_ok=True)
-            self.logger.info(f"📁 Created directory: {self.path}")
 
         # splitter 설정 저장
         self.sp = sp
@@ -75,6 +75,16 @@ class Experimenter():
         self.grps = {}
         self.metric = {}
         self.stacking = {}
+
+    @staticmethod
+    def create(data, path, data_names=None, sp=ShuffleSplit(n_splits=1, random_state=1), sp_v=None, splitter_params=None, title=None, data_key=None,
+            logger = DefaultLogger(level=['info', 'progress'])):
+        
+        if os.path.exists(path):
+            raise RuntimeError(f"Exists: {self.path}")
+        return Experimenter(
+            data, path, data_names, sp=sp, sp_v=sp_v, splitter_params=splitter_params, title=title, data_key=data_key,
+            logger = logger)
 
     def get_n_splits(self):
         return len(self.train_idx_list)
@@ -336,7 +346,8 @@ class Experimenter():
 
         # parent_grp 변경 처리
         parent_changed = False
-        if parent_grp is not None and grp.parent_grp != new_parent:
+        new_parent = parent_grp
+        if new_parent is not None and grp.parent_grp != new_parent:
             parent_changed = True
             # 이전 parent의 child_grps에서 제거
             if grp.parent_grp is not None:
@@ -548,7 +559,12 @@ class Experimenter():
         node.remove()
         # nodes 딕셔너리에서 제거
         del self.nodes[name]
-
+        for v in self.metric.values():
+            v.reset_nodes([name])
+        
+        for v in self.stacking.values():
+            v.reset_nodes([name])
+        
         self.logger.info(f"Node '{name}' removed")
         self._save()
 
@@ -570,6 +586,30 @@ class Experimenter():
                 self.logger.info(f"Finalize '{i}'")
                 node.finalize()
 
+    def reinitialize(self, nodes):
+        if nodes is None:
+            # 기존 동작: 모든 root group의 노드
+            node_names = list(self.nodes.keys())
+        elif isinstance(nodes, list):
+            node_names = [n for n in nodes if n in self.nodes]
+        elif isinstance(nodes, str):
+            pat = re.compile(nodes)
+            node_names = [k for k in self.nodes.keys() if k is not None and pat.search(k)]
+        else:
+            raise ValueError(f"nodes must be None, list, or str, got {type(nodes)}")
+        target_nodes = list()
+        for i in node_names:
+            node = self.nodes[i]
+            if type(node) != RootNode and node.status == 'finalized':
+                self.logger.info(f"reinitialize '{i}'")
+                node.initialize()
+
+    def close_exp(self):
+        for k, node in self.nodes.items():
+            if type(node) != RootNode and node.status == 'built':
+                self.logger.info(f"Finalize '{k}'")
+                node.finalize()
+    
     def _update_output_edges(self, node_name, old_edges, new_edges):
         """output_edges 무결성 유지
 
@@ -669,6 +709,9 @@ class Experimenter():
         if not isinstance(edges, list):
             edges = [edges]
 
+        if len(edges) == 0:
+            raise ValueError("")
+        
         # 사이클 체크
         has_cycle, cycle_edges = self._check_cycle(name, edges)
         if has_cycle:
@@ -757,7 +800,7 @@ class Experimenter():
             node.end_build()
         self.logger.info(f"Build complete: {len(target_nodes)} node(s)")
     
-    def exp(self, nodes = None, retry = False):
+    def exp(self, nodes = None):
         if nodes is None:
             # 기존 동작: 모든 root group의 노드
             node_names = list(self.nodes.keys())
@@ -769,7 +812,7 @@ class Experimenter():
         else:
             raise ValueError(f"nodes must be None, list, or str, got {type(nodes)}")
         target_nodes = [
-            i for i in self._get_effected_nodes([None]) if type(i) != RootNode and i.grp.role == 'exp' and (i.name in node_names and (i.status is None or retry))
+            i for i in self._get_effected_nodes([None]) if type(i) != RootNode and i.grp.role == 'exp' and (i.name in node_names and i.status is None)
         ]
         self.logger.info(f"Experimenting {len(target_nodes)} node(s)")
 
@@ -815,7 +858,9 @@ class Experimenter():
                                 sub_metrics[k].append(sub_metric)
                             # collect stacking data
                             for k, v in self.stacking.items():
-                                stacks[k].append(v._get_valid(result_data))
+                                _valid = v._get_valid(result_data)
+                                if _valid is not None:
+                                    stacks[k].append(_valid)
 
                         for w in caught:
                             self.logger.warning(f"[{node.name}] fold {i}: {w.category.__name__}: {w.message}")
@@ -825,8 +870,9 @@ class Experimenter():
                         v._set_metric(node.name, i, sub_metrics[k])
                     # aggregate and stack
                     for k, v in self.stacking.items():
-                        stk = v._aggregate(iter(stacks[k]))
-                        v._stack(node.name, i, stk)
+                        if len(stacks[k]) > 0:
+                            stk = v._aggregate(iter(stacks[k]))
+                            v._stack(node.name, i, stk)
                 self.logger.end_progress(len(target_nodes))
             self.logger.end_progress(n_splits)
         except Exception as e:
@@ -996,6 +1042,19 @@ class Experimenter():
         """
         return desc_node_vars(self, node_name, idx)
 
+    def get_exp_obj(self, node_name, idx):
+        if node_name not in self.nodes or node_name is None:
+            raise ValueError(f"Node '{node_name}' not found")
+
+        node = self.nodes[node_name]
+
+        # 노드가 빌드되지 않았으면 에러
+        if node.status != 'built':
+            raise ValueError(f"Node '{node_name}' status should be built")
+
+        # 외부 fold의 내부 fold들: [(processor, train_v, info), ...]
+        return node.get_exp_obj(idx)
+    
     def get_node_vars(self, node_name, idx):
         """특정 노드의 입력/출력 변수를 가져옴
 
@@ -1041,6 +1100,55 @@ class Experimenter():
 
         # 등장 빈도(내부 폴드 개수)의 내림차순으로 정렬
         result.sort(key=lambda x: len(x[2]), reverse=True)
+
+        return result
+
+    def get_edges_var(self, edges):
+        from ._node_processor import resolve_columns
+
+        class _ColHolder:
+            def __init__(self, columns):
+                self._columns = columns
+            def get_columns(self):
+                return self._columns
+
+        var_map = {}
+
+        for idx in range(self.get_n_splits()):
+            n_inner = len(self.train_idx_list[idx])
+            edge_objs = []
+            for node_name, var in edges:
+                if node_name is None:
+                    edge_objs.append((None, var, None))
+                else:
+                    node = self.nodes[node_name]
+                    edge_objs.append((node_name, var, node.get_exp_obj(idx)))
+
+            for inner_idx in range(n_inner):
+                collected = []
+                for node_name, var, objs in edge_objs:
+                    if node_name is None:
+                        cols = self.root.get_columns()
+                        proc = None
+                    else:
+                        proc = objs[inner_idx][0]
+                        cols = list(proc.output_vars) if proc.output_vars is not None else []
+
+                    if var is not None:
+                        cols = resolve_columns(_ColHolder(cols), var, processor=proc)
+
+                    collected.extend(cols)
+
+                key = tuple(collected)
+                if key not in var_map:
+                    var_map[key] = []
+                var_map[key].append((idx, inner_idx))
+
+        result = []
+        for vars_tuple, fold_indices in var_map.items():
+            result.append((list(vars_tuple), fold_indices))
+
+        result.sort(key=lambda x: len(x[1]), reverse=True)
 
         return result
 
@@ -1198,7 +1306,7 @@ class Experimenter():
                 self.get_result(node, i, result, params)
             )
 
-    def get_results_merge(self, node, result, params = {}, agg_inner = True, agg_outer = False):
+    def get_results_agg(self, node, result, params = {}, agg_inner = True, agg_outer = True):
         if agg_outer and not agg_inner:
             raise ValueError("agg_outer requires agg_inner to be True")
         if not self.nodes[node].adapter_.result_objs[result][1]:

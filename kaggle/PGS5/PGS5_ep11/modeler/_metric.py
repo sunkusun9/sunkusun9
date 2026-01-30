@@ -97,6 +97,8 @@ class Metric:
     def _get_metric(self, target_data, result_data):
         (true_train_t, true_train_v), true_valid = target_data
         selected_cols = resolve_columns(result_data['output_valid'], self.output_var)
+        if len(selected_cols) == 0:
+            return None
         prd = result_data['output_valid'].select_columns(selected_cols)
         result = {
             'valid': self.metric_func(true_valid.data, prd.data)
@@ -119,6 +121,8 @@ class Metric:
         l.append(metric)
 
     def _end(self, node):
+        if len(self.metrics[node]) == 0:
+            del self.metrics[node]
         self.save()
 
     def _get_nodes(self, nodes):
@@ -152,3 +156,20 @@ class Metric:
     def get_metrics(self, nodes):
         node_names = self._get_nodes(nodes)
         return pd.concat([self.get_metric(node) for node in node_names], axis=1).T
+
+    def get_metrics_agg(self, nodes, inner_fold = True, outer_fold = True, include_std = False):
+        if outer_fold and not inner_fold:
+            raise ValueError("")
+        df = self.get_metrics(nodes)
+        if inner_fold:
+            df_agg_mean = df.stack(level = 1).groupby(level=0).mean()
+            if include_std:
+                df_agg_std = df.stack(level = 1).groupby(level=0).std()
+            else:
+                df_agg_std = None
+            if outer_fold:
+                df_agg_mean = df_agg_mean.stack(level=0).groupby(level=0).mean()
+                if include_std:
+                    df_agg_std = df_agg_std.stack(level = 0).groupby(level=0).mean()
+            return df_agg_mean, df_agg_std
+        return df
