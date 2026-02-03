@@ -7,9 +7,9 @@ from modeler._data_wrapper import DataWrapper
 from ._node_processor import resolve_columns
 
 class Stacking:
-    def __init__(self, experimenter, target_edges, output_var, method='mean', include_target=True):
+    def __init__(self, experimenter, target_vars, output_var, method='mean', include_target=True):
         self.experimenter = experimenter
-        self.target_edges = target_edges
+        self.target_vars = target_vars
         self.output_var = output_var
         self.method = method
         self.include_target = include_target
@@ -35,10 +35,10 @@ class Stacking:
         return stacking_dir
 
     def save_config(self):
-        """target_edges, output_var, method, include_target를 파일로 저장"""
+        """target_vars, output_var, method, include_target를 파일로 저장"""
         stacking_dir = self._ensure_stacking_dir()
         config = {
-            'target_edges': self.target_edges,
+            'target_vars': self.target_vars,
             'output_var': self.output_var,
             'method': self.method,
             'include_target': self.include_target,
@@ -48,13 +48,13 @@ class Stacking:
             pickle.dump(config, f)
 
     def load_config(self):
-        """파일에서 target_edges, output_var, method, include_target를 로드"""
+        """파일에서 target_vars, output_var, method, include_target를 로드"""
         config_path = self.stacking_dir / "__config.pkl"
         if not config_path.exists():
             raise FileNotFoundError(f"Config not found: {config_path}")
         with open(config_path, 'rb') as f:
             config = pickle.load(f)
-        self.target_edges = config['target_edges']
+        self.target_vars = config['target_vars']
         self.output_var = config['output_var']
         self.method = config['method']
         self.include_target = config['include_target']
@@ -80,7 +80,7 @@ class Stacking:
         # Stacking 인스턴스 생성
         stacking = cls(
             experimenter=experimenter,
-            target_edges=config['target_edges'],
+            target_vars=config['target_vars'],
             output_var=config['output_var'],
             method=config['method'],
             include_target=config['include_target']
@@ -107,9 +107,15 @@ class Stacking:
 
     def _build_target_value(self):
         target_list = []
+        # target_vars를 임시 key로 감싸서 get_data_valid 호출
+        temp_edges = {'_target': self.target_vars}
         for idx in range(self.experimenter.get_n_splits()):
-            iterator = self.experimenter.get_data_valid(idx, self.target_edges)
-            aggregated = DataWrapper.simple(iterator)
+            iterator = self.experimenter.get_data_valid(idx, temp_edges)
+            # '_target' key의 데이터만 추출하여 전달
+            def extract_target(it):
+                for data_dict in it:
+                    yield data_dict['_target']
+            aggregated = DataWrapper.simple(extract_target(iterator))
             target_list.append(aggregated)
 
         wrapper_cls = type(target_list[0])

@@ -75,6 +75,24 @@ class Experimenter():
         self.grps = {}
         self.metric = {}
         self.stacking = {}
+        self.status = "open"
+
+    def _check_open(self):
+        """상태가 open인지 확인하고, 아니면 에러 발생"""
+        if self.status != "open":
+            raise RuntimeError(f"Experimenter is '{self.status}'. Only 'open' status allows modifications.")
+
+    def open(self):
+        """Experimenter를 open 상태로 변경"""
+        self.status = "open"
+        self._save()
+        self.logger.info("Experimenter status changed to 'open'")
+
+    def close(self):
+        """Experimenter를 close 상태로 변경"""
+        self.status = "close"
+        self._save()
+        self.logger.info("Experimenter status changed to 'close'")
 
     @staticmethod
     def create(data, path, data_names=None, sp=ShuffleSplit(n_splits=1, random_state=1), sp_v=None, splitter_params=None, title=None, data_key=None,
@@ -89,12 +107,12 @@ class Experimenter():
     def get_n_splits(self):
         return len(self.train_idx_list)
 
-    def add_metric(self, name, target_edges, output_var, metric_func, include_train=False):
+    def add_metric(self, name, target_vars, output_var, metric_func, include_train=False):
         """Metric 인스턴스를 생성하여 추가
 
         Args:
             name: metric 이름
-            target_edges: 타겟 edges
+            target_vars: 타겟 변수 리스트 [(node_name, var), ...]
             output_var: 출력 변수
             metric_func: metric 함수
             include_train: train 결과 포함 여부 (기본값: False)
@@ -102,6 +120,7 @@ class Experimenter():
         Returns:
             Metric: 생성된 Metric 인스턴스
         """
+        self._check_open()
         # __metric 폴더 생성 (최초 추가 시)
         metric_dir = self.path / "__metric"
         if not metric_dir.exists():
@@ -110,7 +129,7 @@ class Experimenter():
         metric = Metric(
             name=name,
             experimenter=self,
-            target_edges=target_edges,
+            target_vars=target_vars,
             output_var=output_var,
             metric_func=metric_func,
             include_train=include_train
@@ -119,12 +138,12 @@ class Experimenter():
         self._save()
         return metric
 
-    def add_stacking(self, name, target_edges, output_var, method='mean', include_target=True):
+    def add_stacking(self, name, target_vars, output_var, method='mean', include_target=True):
         """Stacking 인스턴스를 생성하여 추가
 
         Args:
             name: stacking 이름
-            target_edges: 타겟 edges
+            target_vars: 타겟 변수 리스트 [(node_name, var), ...]
             output_var: 출력 변수
             method: 집계 방법 (기본값: 'mean')
             include_target: 타겟 포함 여부 (기본값: True)
@@ -132,10 +151,11 @@ class Experimenter():
         Returns:
             Stacking: 생성된 Stacking 인스턴스
         """
+        self._check_open()
 
         stacking = Stacking(
             experimenter=self,
-            target_edges=target_edges,
+            target_vars=target_vars,
             output_var=output_var,
             method=method,
             include_target=include_target
@@ -195,7 +215,7 @@ class Experimenter():
 
         Args:
             node_name: 체크할 노드 이름
-            new_edges: 추가할 edges 리스트 [(edge_name, var), ...]
+            new_edges: 추가할 edges dict {key: [(edge_name, var), ...], ...}
 
         Returns:
             tuple: (has_cycle: bool, cycle_edges: list)
@@ -206,36 +226,38 @@ class Experimenter():
         descendants = self._find_descendants(node_name)
 
         cycle_edges = []
-        for edge_name, _ in new_edges:
-            # Root(None)로의 edge는 사이클을 만들지 않음
-            if edge_name is None:
-                continue
+        for key, edge_list in new_edges.items():
+            for edge_name, _ in edge_list:
+                # Root(None)로의 edge는 사이클을 만들지 않음
+                if edge_name is None:
+                    continue
 
-            # edge_name이 실제 노드인지 확인
-            if edge_name not in self.nodes:
-                continue
+                # edge_name이 실제 노드인지 확인
+                if edge_name not in self.nodes:
+                    continue
 
-            # edge_name이 node_name의 descendants에 있으면 사이클
-            # node_name -> ... -> edge_name (이미 존재)
-            # node_name -> edge_name (새로 추가)
-            # 이면 node_name -> edge_name -> ... -> node_name 사이클이 생김
-            if edge_name in descendants:
-                cycle_edges.append(edge_name)
+                # edge_name이 node_name의 descendants에 있으면 사이클
+                # node_name -> ... -> edge_name (이미 존재)
+                # node_name -> edge_name (새로 추가)
+                # 이면 node_name -> edge_name -> ... -> node_name 사이클이 생김
+                if edge_name in descendants:
+                    cycle_edges.append(edge_name)
 
         if cycle_edges:
             return True, cycle_edges
         return False, []
     
     def _check_edges(self, edges):
-        if edges is None:
+        if edges is None or len(edges) == 0:
             return False
-        for name, _ in edges:
-            if name is None:
-                continue
-            if name not in self.nodes:
-                raise ValueError(f"Edge node '{name}' not found")
-            if self.nodes[name].grp.role != 'pipe':
-                raise ValueError(f"Edge node '{name}' must be a pipe node, got '{self.nodes[name].grp.role}'")
+        for key, edge_list in edges.items():
+            for name, _ in edge_list:
+                if name is None:
+                    continue
+                if name not in self.nodes:
+                    raise ValueError(f"Edge node '{name}' not found")
+                if self.nodes[name].grp.role != 'pipe':
+                    raise ValueError(f"Edge node '{name}' must be a pipe node, got '{self.nodes[name].grp.role}'")
         return True
 
     def _get_all_nodes_in_grp(self, grp):
@@ -250,25 +272,40 @@ class Experimenter():
 
         Args:
             node_name: 노드 이름
-            new_grp_edges: 새로 적용할 그룹 edges (None이면 현재 그룹 attrs 사용)
+            new_grp_edges: 새로 적용할 그룹 edges dict (None이면 현재 그룹 attrs 사용)
         """
         if node_name not in self.nodes:
-            return []
+            return {}
 
         node = self.nodes[node_name]
-        node_own_edges = list(node.org_attr['edges']) if node.org_attr and node.org_attr['edges'] else []
+        node_own_edges = node.org_attr['edges'] if node.org_attr and node.org_attr['edges'] else {}
 
         if new_grp_edges is not None:
-            # 새 그룹 edges + 노드 자체 edges
-            return new_grp_edges + node_own_edges
+            # 새 그룹 edges + 노드 자체 edges (dict merge with extend)
+            merged = {k: list(v) for k, v in new_grp_edges.items()}
+            for k, v in node_own_edges.items():
+                if k in merged:
+                    merged[k].extend(v)
+                else:
+                    merged[k] = list(v)
+            return merged
         else:
             # 현재 그룹 attrs에서 edges 가져오기
             grp_attrs = node.grp.get_attrs() if node.grp else {}
-            grp_edges = grp_attrs.get('edges', [])
-            return grp_edges + node_own_edges
+            grp_edges = grp_attrs.get('edges', {})
+            merged = {k: list(v) for k, v in grp_edges.items()}
+            for k, v in node_own_edges.items():
+                if k in merged:
+                    merged[k].extend(v)
+                else:
+                    merged[k] = list(v)
+            return merged
 
-    def set_grp(self, name, role=None, processor=None, edges=[], X=None, y=None, method=None, parent_grp=None, adapter=None, params=None):
+    def set_grp(self, name, role=None, processor=None, edges=None, X=None, y=None, method=None, parent_grp=None, adapter=None, params=None, replace = False):
+        self._check_open()
         self._validate_name(name)
+        if edges is None:
+            edges = {}
         self._check_edges(edges)
         if name in self.nodes:
             raise ValueError(f"Name '{name}' already exists as a node")
@@ -301,14 +338,15 @@ class Experimenter():
             grp.save_info()
             self._save()
             return grp
-
+        elif not replace:
+            raise ValueError("")
         grp = self.grps[name]
         if grp.role != role:
             raise ValueError(f"Cannot change role of group '{name}': existing '{grp.role}', requested '{role}'")
         old_grp_path = grp.path
         # 3. edges 변경 시 순환 구조 체크 (변경 전 검증)
-        if edges is not None:
-            new_edges = edges if isinstance(edges, list) else [edges]
+        if edges is not None and len(edges) > 0:
+            new_edges = edges
 
             # 이 그룹과 하위 그룹의 모든 노드 수집
             all_affected_nodes = self._get_all_nodes_in_grp(grp)
@@ -321,20 +359,34 @@ class Experimenter():
                 node = self.nodes[node_name]
                 # 노드의 그룹 계층에서 현재 grp의 위치를 고려하여 최종 edges 계산
                 # 부모 그룹의 edges + 새 edges + 자식 그룹의 edges + 노드 자체 edges
-                node_own_edges = list(node.org_attr['edges']) if node.org_attr and node.org_attr['edges'] else []
+                node_own_edges = node.org_attr['edges'] if node.org_attr and node.org_attr['edges'] else {}
 
                 # 그룹 계층에서 edges 수집 (현재 grp는 new_edges로 대체)
-                grp_edges = []
+                grp_edges = {}
                 current_grp = node.grp
                 while current_grp is not None:
                     if current_grp.name == name:
-                        # 변경 대상 그룹: 새 edges 사용
-                        grp_edges = new_edges + grp_edges
+                        # 변경 대상 그룹: 새 edges 사용 (merge with extend)
+                        for k, v in new_edges.items():
+                            if k in grp_edges:
+                                grp_edges[k] = list(v) + grp_edges[k]
+                            else:
+                                grp_edges[k] = list(v)
                     else:
-                        grp_edges = current_grp.edges + grp_edges
+                        for k, v in current_grp.edges.items():
+                            if k in grp_edges:
+                                grp_edges[k] = list(v) + grp_edges[k]
+                            else:
+                                grp_edges[k] = list(v)
                     current_grp = current_grp.parent_grp
 
-                final_edges = grp_edges + node_own_edges
+                # final_edges = grp_edges + node_own_edges (dict merge)
+                final_edges = {k: list(v) for k, v in grp_edges.items()}
+                for k, v in node_own_edges.items():
+                    if k in final_edges:
+                        final_edges[k].extend(v)
+                    else:
+                        final_edges[k] = list(v)
 
                 # 사이클 체크
                 has_cycle, cycle_edges = self._check_cycle(node_name, final_edges)
@@ -360,8 +412,8 @@ class Experimenter():
         # 그룹 속성 업데이트
         if processor is not None:
             grp.processor = processor
-        if edges is not None:
-            grp.edges = edges if isinstance(edges, list) else [edges]
+        if edges is not None and len(edges) > 0:
+            grp.edges = edges
         if X is not None:
             grp.X = X
         if y is not None:
@@ -406,6 +458,7 @@ class Experimenter():
         return grp
 
     def rename_grp(self, name_from, name_to):
+        self._check_open()
         self._validate_name(name_to)
 
         if name_from not in self.grps:
@@ -460,6 +513,7 @@ class Experimenter():
         return [self.nodes[i[0]] for i in sorted_nodes]
     
     def remove_grp(self, name):
+        self._check_open()
         if name not in self.grps:
             raise ValueError(f"Group '{name}' not found")
 
@@ -529,6 +583,7 @@ class Experimenter():
         Raises:
             ValueError: 노드가 존재하지 않거나, 자식 노드가 있는 경우
         """
+        self._check_open()
         # 노드가 존재하는지 확인
         if name not in self.nodes:
             raise ValueError(f"Node '{name}' not found")
@@ -569,6 +624,7 @@ class Experimenter():
         self._save()
 
     def finalize(self, nodes):
+        self._check_open()
         if nodes is None:
             # 기존 동작: 모든 root group의 노드
             node_names = list(self.nodes.keys())
@@ -587,6 +643,7 @@ class Experimenter():
                 node.finalize()
 
     def reinitialize(self, nodes):
+        self._check_open()
         if nodes is None:
             # 기존 동작: 모든 root group의 노드
             node_names = list(self.nodes.keys())
@@ -605,39 +662,55 @@ class Experimenter():
                 node.initialize()
 
     def close_exp(self):
+        if self.status != "open":
+            raise RuntimeError("")
         for k, node in self.nodes.items():
             if type(node) != RootNode and node.status == 'built':
                 self.logger.info(f"Finalize '{k}'")
                 node.finalize()
+        self.status = "closed"
     
+    def reopen_exp(self):
+        if self.status != "closed":
+            raise RuntimeError("")
+        for k, node in self.nodes.items():
+            if type(node) != RootNode and node.grp == 'pipe':
+                self.logger.info(f"Intialize '{k}'")
+                node.initialize()
+        self.build()
+
+
     def _update_output_edges(self, node_name, old_edges, new_edges):
         """output_edges 무결성 유지
 
         Args:
             node_name: 현재 노드 이름
-            old_edges: 이전 edges 리스트 (None이면 제거만 스킵)
-            new_edges: 새 edges 리스트 (None이면 추가만 스킵)
+            old_edges: 이전 edges dict (None이면 제거만 스킵)
+            new_edges: 새 edges dict (None이면 추가만 스킵)
         """
         # 이전 edges에서 현재 노드 제거
         if old_edges is not None:
-            for edge_name, _ in old_edges:
-                if edge_name in self.nodes:
-                    parent_node = self.nodes[edge_name]
-                    if node_name in parent_node.output_edges:
-                        parent_node.output_edges.remove(node_name)
+            for key, edge_list in old_edges.items():
+                for edge_name, _ in edge_list:
+                    if edge_name in self.nodes:
+                        parent_node = self.nodes[edge_name]
+                        if node_name in parent_node.output_edges:
+                            parent_node.output_edges.remove(node_name)
 
         # 새 edges에 현재 노드 추가
         if new_edges is not None:
-            for edge_name, _ in new_edges:
-                if edge_name in self.nodes:
-                    parent_node = self.nodes[edge_name]
-                    if node_name not in parent_node.output_edges:
-                        parent_node.output_edges.append(node_name)
+            for key, edge_list in new_edges.items():
+                for edge_name, _ in edge_list:
+                    if edge_name in self.nodes:
+                        parent_node = self.nodes[edge_name]
+                        if node_name not in parent_node.output_edges:
+                            parent_node.output_edges.append(node_name)
 
     def set_node(
-        self, name, grp, processor = None, edges = list(), X = None, y = None,
-        method = None, adapter = 'default', params = None
+        self, name, grp, processor = None, edges = None, X = None, y = None,
+        method = None, adapter = 'default', params = None, replace = False
     ):
+        self._check_open()
         self._validate_name(name)
 
         if name in self.grps:
@@ -645,11 +718,15 @@ class Experimenter():
 
         if grp not in self.grps:
             raise ValueError(f"Group '{grp}' not found")
-        
+
+        if edges is None:
+            edges = {}
         self._check_edges(edges)
 
         # 기존 노드가 있는지 확인
         is_update = name in self.nodes
+        if not replace and is_update:
+            raise ValueError("")
         old_edges = None
         old_output_edges = None
         if is_update:
@@ -683,10 +760,20 @@ class Experimenter():
         # 파라미터로 넘어온 값이 None이 아니면 override
         if processor is None:
             processor = grp_attrs.get('processor', None)
-        if len(grp_attrs['edges']) > 0:
-            edges = edges + grp_attrs['edges']
+        # edges 병합: grp_attrs['edges']에 node의 edges를 extend
+        grp_edges = grp_attrs.get('edges', {})
+        merged_edges = {k: list(v) for k, v in grp_edges.items()}
+        for k, v in edges.items():
+            if k in merged_edges:
+                merged_edges[k].extend(v)
+            else:
+                merged_edges[k] = list(v)
+        edges = merged_edges
         if X is None:
             X = grp_attrs['X']
+        if X is None:
+            if 'X' in edges:
+                X = 'X'
         if y is None:
             y = grp_attrs['y']
         if method is None:
@@ -705,12 +792,9 @@ class Experimenter():
         if method is None:
             raise ValueError(f"Cannot create node '{name}': method is required")
 
-        # edges를 리스트로 정규화
-        if not isinstance(edges, list):
-            edges = [edges]
-
+        # edges가 비어있으면 에러
         if len(edges) == 0:
-            raise ValueError("")
+            raise ValueError(f"Cannot create node '{name}': edges is required")
         
         # 사이클 체크
         has_cycle, cycle_edges = self._check_cycle(name, edges)
@@ -759,6 +843,7 @@ class Experimenter():
         return node
 
     def build(self, nodes = None, rebuild = False):
+        self._check_open()
         if nodes is None:
             # 기존 동작: 모든 root group의 노드
             node_names = list(self.nodes.keys())
@@ -801,6 +886,7 @@ class Experimenter():
         self.logger.info(f"Build complete: {len(target_nodes)} node(s)")
     
     def exp(self, nodes = None):
+        self._check_open()
         if nodes is None:
             # 기존 동작: 모든 root group의 노드
             node_names = list(self.nodes.keys())
@@ -879,6 +965,11 @@ class Experimenter():
             self.logger.clear_progress()
             self.logger.info(f"Exp failed at fold {i}, node '{node.name}': {type(e).__name__}: {e}")
             self.logger.info(traceback.format_exc())
+            # _start for metrics and stackings
+            for v in self.metric.values():
+                v.reset_node(target_nodes)
+            for v in self.stacking.values():
+                v.reset_node(target_nodes)
             raise
 
         # end_experiment for all nodes
@@ -896,72 +987,103 @@ class Experimenter():
         self.logger.info(f"Experimentation complete: {len(target_nodes)} node(s)")
 
     def get_data(self, idx, edges):
-        def ret_data_func(data_list):
-            for z in zip(*data_list):
-                train_sub, valid_sub, outer_valid_sub = list(), list(), list()
-                for (train_data, train_v_data), outer_valid_data in z:
-                    train_sub.append(train_data)
-                    if train_v_data is not None:
-                        valid_sub.append(train_v_data)
-                    outer_valid_sub.append(outer_valid_data)
+        def ret_data_func(data_dict):
+            iters = {k: iter(v) for k, v in data_dict.items()}
+            while True:
+                result = {}
+                try:
+                    for k, it in iters.items():
+                        z = next(it)
+                        train_sub, valid_sub, outer_valid_sub = list(), list(), list()
+                        for (train_data, train_v_data), outer_valid_data in z:
+                            train_sub.append(train_data)
+                            if train_v_data is not None:
+                                valid_sub.append(train_v_data)
+                            outer_valid_sub.append(outer_valid_data)
 
-                train_concat = type(train_sub[0]).concat(train_sub, axis=1)
-                outer_concat = type(outer_valid_sub[0]).concat(outer_valid_sub, axis=1)
-                if len(valid_sub) > 0:
-                    valid_concat = type(valid_sub[0]).concat(valid_sub, axis=1)
-                    yield (train_concat, valid_concat), outer_concat
-                else:
-                    yield (train_concat, None), outer_concat
+                        train_concat = type(train_sub[0]).concat(train_sub, axis=1)
+                        outer_concat = type(outer_valid_sub[0]).concat(outer_valid_sub, axis=1)
+                        if len(valid_sub) > 0:
+                            valid_concat = type(valid_sub[0]).concat(valid_sub, axis=1)
+                            result[k] = ((train_concat, valid_concat), outer_concat)
+                        else:
+                            result[k] = ((train_concat, None), outer_concat)
+                    yield result
+                except StopIteration:
+                    break
 
-        data_list = list()
-        for node_name, var in edges:
-            data_list.append(self.nodes[node_name].get_data(idx, var))
-        return ret_data_func(data_list)
+        data_dict = {}
+        for key, edge_list in edges.items():
+            key_data_list = []
+            for node_name, var in edge_list:
+                key_data_list.append(self.nodes[node_name].get_data(idx, var))
+            data_dict[key] = zip(*key_data_list)
+        return ret_data_func(data_dict)
     
     def get_data_train(self, idx, edges):
-        def ret_data_func(data_list):
-            for z in zip(*data_list):
-                train_sub, valid_sub = list(), list()
-                for train_data, train_v_data in z:
-                    train_sub.append(train_data)
-                    if train_v_data is not None:
-                        valid_sub.append(train_v_data)
-                train_concat = type(train_sub[0]).concat(train_sub, axis=1)
-                if len(valid_sub) > 0:
-                    valid_concat = type(valid_sub[0]).concat(valid_sub, axis=1)
-                    yield train_concat, valid_concat
-                else:
-                    yield train_concat, None
+        def ret_data_func(data_dict):
+            iters = {k: iter(v) for k, v in data_dict.items()}
+            while True:
+                result = {}
+                try:
+                    for k, it in iters.items():
+                        z = next(it)
+                        train_sub, valid_sub = list(), list()
+                        for train_data, train_v_data in z:
+                            train_sub.append(train_data)
+                            if train_v_data is not None:
+                                valid_sub.append(train_v_data)
+                        train_concat = type(train_sub[0]).concat(train_sub, axis=1)
+                        if len(valid_sub) > 0:
+                            valid_concat = type(valid_sub[0]).concat(valid_sub, axis=1)
+                            result[k] = (train_concat, valid_concat)
+                        else:
+                            result[k] = (train_concat, None)
+                    yield result
+                except StopIteration:
+                    break
 
-        data_list = list()
-        for node_name, var in edges:
-            data_list.append(self.nodes[node_name].get_data_train(idx, var))
-        return ret_data_func(data_list)
+        data_dict = {}
+        for key, edge_list in edges.items():
+            key_data_list = []
+            for node_name, var in edge_list:
+                key_data_list.append(self.nodes[node_name].get_data_train(idx, var))
+            data_dict[key] = zip(*key_data_list)
+        return ret_data_func(data_dict)
     
     def get_data_valid(self, idx, edges):
         """외부 검증 데이터에 대한 처리 결과를 가져옴
 
         Args:
             idx: outer fold 인덱스
-            edges: [(node_name, var), ...] 형태의 edge 리스트
+            edges: {key: [(node_name, var), ...], ...} 형태의 edge dict
 
         Yields:
-            valid_concat: 각 inner fold 모델로 처리된 외부 검증 데이터 결과 (concat)
+            dict: {key: valid_concat, ...} 각 key별로 concat된 외부 검증 데이터 결과
         """
-        def ret_data_func(data_list):
-            for z in zip(*data_list):
-                outer_valid_sub = list()
-                for outer_valid_data in z:
-                    outer_valid_sub.append(outer_valid_data)
+        def ret_data_func(data_dict):
+            iters = {k: iter(v) for k, v in data_dict.items()}
+            while True:
+                result = {}
+                try:
+                    for k, it in iters.items():
+                        z = next(it)
+                        outer_valid_sub = list()
+                        for outer_valid_data in z:
+                            outer_valid_sub.append(outer_valid_data)
+                        outer_concat = type(outer_valid_sub[0]).concat(outer_valid_sub, axis=1)
+                        result[k] = outer_concat
+                    yield result
+                except StopIteration:
+                    break
 
-                # DataWrapper의 concat 사용
-                outer_concat = type(outer_valid_sub[0]).concat(outer_valid_sub, axis=1)
-                yield outer_concat
-
-        data_list = list()
-        for node_name, var in edges:
-            data_list.append(self.nodes[node_name].get_data_valid(idx, var))
-        return ret_data_func(data_list)
+        data_dict = {}
+        for key, edge_list in edges.items():
+            key_data_list = []
+            for node_name, var in edge_list:
+                key_data_list.append(self.nodes[node_name].get_data_valid(idx, var))
+            data_dict[key] = zip(*key_data_list)
+        return ret_data_func(data_dict)
 
     def split(self, edges):
         for idx in range(len(self.train_idx_list)):
@@ -990,10 +1112,11 @@ class Experimenter():
             if name is None:
                 continue
             processor_name = node.processor.__name__
-            edges_info = ", ".join([
-                f"{n or 'Root'}{f'[{v}]' if v else ''}"
-                for n, v in node.edges
-            ])
+            edges_info_parts = []
+            for key, edge_list in node.edges.items():
+                edge_strs = [f"{n or 'Root'}{f'[{v}]' if v else ''}" for n, v in edge_list]
+                edges_info_parts.append(f"{key}: [{', '.join(edge_strs)}]")
+            edges_info = ", ".join(edges_info_parts)
             lines.append(f"## {name}")
             lines.append(f"- **Processor**: {processor_name}")
             lines.append(f"- **Method**: {node.method}")
@@ -1042,7 +1165,7 @@ class Experimenter():
         """
         return desc_node_vars(self, node_name, idx)
 
-    def get_exp_obj(self, node_name, idx):
+    def get_objs(self, node_name, idx):
         if node_name not in self.nodes or node_name is None:
             raise ValueError(f"Node '{node_name}' not found")
 
@@ -1053,7 +1176,7 @@ class Experimenter():
             raise ValueError(f"Node '{node_name}' status should be built")
 
         # 외부 fold의 내부 fold들: [(processor, train_v, info), ...]
-        return node.get_exp_obj(idx)
+        return node.get_objs(idx)
     
     def get_node_vars(self, node_name, idx):
         """특정 노드의 입력/출력 변수를 가져옴
@@ -1076,7 +1199,7 @@ class Experimenter():
             raise ValueError(f"Node '{node_name}' status should be built")
 
         # 외부 fold의 내부 fold들: [(processor, train_v, info), ...]
-        inner_folds = node.get_exp_obj(idx)
+        inner_folds = node.get_objs(idx)
 
         # (입력변수 튜플, 출력변수 튜플) -> 내부 fold index 리스트
         var_map = {}
@@ -1116,37 +1239,45 @@ class Experimenter():
 
         for idx in range(self.get_n_splits()):
             n_inner = len(self.train_idx_list[idx])
-            edge_objs = []
-            for node_name, var in edges:
-                if node_name is None:
-                    edge_objs.append((None, var, None))
-                else:
-                    node = self.nodes[node_name]
-                    edge_objs.append((node_name, var, node.get_exp_obj(idx)))
+            # edges는 dict: {key: [(node_name, var), ...], ...}
+            edge_objs = {}
+            for key, edge_list in edges.items():
+                edge_objs[key] = []
+                for node_name, var in edge_list:
+                    if node_name is None:
+                        edge_objs[key].append((None, var, None))
+                    else:
+                        node = self.nodes[node_name]
+                        edge_objs[key].append((node_name, var, node.get_objs(idx)))
 
             for inner_idx in range(n_inner):
-                collected = []
-                for node_name, var, objs in edge_objs:
-                    if node_name is None:
-                        cols = self.root.get_columns()
-                        proc = None
-                    else:
-                        proc = objs[inner_idx][0]
-                        cols = list(proc.output_vars) if proc.output_vars is not None else []
+                collected = {}
+                for key, objs_list in edge_objs.items():
+                    collected[key] = []
+                    for node_name, var, objs in objs_list:
+                        if node_name is None:
+                            cols = self.root.get_columns()
+                            proc = None
+                        else:
+                            proc = objs[inner_idx][0]
+                            cols = list(proc.output_vars) if proc.output_vars is not None else []
 
-                    if var is not None:
-                        cols = resolve_columns(_ColHolder(cols), var, processor=proc)
+                        if var is not None:
+                            cols = resolve_columns(_ColHolder(cols), var, processor=proc)
 
-                    collected.extend(cols)
+                        collected[key].extend(cols)
 
-                key = tuple(collected)
-                if key not in var_map:
-                    var_map[key] = []
-                var_map[key].append((idx, inner_idx))
+                # key를 정렬된 형태로 튜플화
+                key_tuple = tuple((k, tuple(v)) for k, v in sorted(collected.items()))
+                if key_tuple not in var_map:
+                    var_map[key_tuple] = []
+                var_map[key_tuple].append((idx, inner_idx))
 
         result = []
         for vars_tuple, fold_indices in var_map.items():
-            result.append((list(vars_tuple), fold_indices))
+            # dict로 복원
+            vars_dict = {k: list(v) for k, v in vars_tuple}
+            result.append((vars_dict, fold_indices))
 
         result.sort(key=lambda x: len(x[1]), reverse=True)
 
@@ -1205,7 +1336,8 @@ class Experimenter():
             'grp_load_order': self._get_grp_load_order(),
             'node_load_order': self._get_node_load_order(),
             'metric_keys': list(self.metric.keys()),
-            'stacking_keys': list(self.stacking.keys())
+            'stacking_keys': list(self.stacking.keys()),
+            "status": self.status
         }
 
         # print(f"💾 Saving Experimenter to {filepath}...")
@@ -1277,11 +1409,12 @@ class Experimenter():
         for node_name, node in exp.nodes.items():
             if node_name is None:
                 continue
-            for edge_name, _ in node.edges:
-                if edge_name in exp.nodes:
-                    parent_node = exp.nodes[edge_name]
-                    if node_name not in parent_node.output_edges:
-                        parent_node.output_edges.append(node_name)
+            for key, edge_list in node.edges.items():
+                for edge_name, _ in edge_list:
+                    if edge_name in exp.nodes:
+                        parent_node = exp.nodes[edge_name]
+                        if node_name not in parent_node.output_edges:
+                            parent_node.output_edges.append(node_name)
 
         # Metric 복원
         for metric_name in save_data['metric_keys']:
@@ -1294,7 +1427,7 @@ class Experimenter():
             exp.stacking[stacking_name] = stacking
 
         exp.logger.info(f"Loaded: {len(exp.nodes) - 1} node(s), {len(exp.grps)} group(s), {len(exp.train_idx_list)} fold(s)")
-
+        exp.status = save_data['status']
         return exp
 
     def get_result(self, node, idx, result, params = {}):
@@ -1375,11 +1508,13 @@ def create_like(exp, data, path, data_names=None, sp=None, sp_v=None, splitter_p
 
     def clone_group_recursive(orig_grp, parent_grp_name=None):
         """그룹을 재귀적으로 복제"""
+        # edges dict 복사
+        edges_copy = {k: list(v) for k, v in orig_grp.edges.items()}
         new_grp = new_exp.set_grp(
             name=orig_grp.name,
             role=orig_grp.role,
             processor=orig_grp.processor,
-            edges=orig_grp.edges[:],  # 리스트 복사
+            edges=edges_copy,
             X=orig_grp.X,
             y=orig_grp.y,
             method=orig_grp.method,
@@ -1428,11 +1563,13 @@ def create_like(exp, data, path, data_names=None, sp=None, sp_v=None, splitter_p
     for name, orig_node in sorted_nodes:
         if orig_node.org_attr is not None:
             org = orig_node.org_attr
+            # edges dict 복사
+            edges_copy = {k: list(v) for k, v in org['edges'].items()} if org['edges'] else {}
             new_exp.set_node(
                 name,
                 grp=orig_node.grp.name,
                 processor=org['processor'],
-                edges=org['edges'][:] if isinstance(org['edges'], list) else [org['edges']] if org['edges'] else [],
+                edges=edges_copy,
                 X=org['X'],
                 y=org['y'],
                 method=org['method'],

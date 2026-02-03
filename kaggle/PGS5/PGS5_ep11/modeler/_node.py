@@ -10,14 +10,14 @@ import time
 
 class NodeGroup():
     def __init__(
-        self, experimenter, name, role, processor = None, edges = list(), X = None, y = None,
+        self, experimenter, name, role, processor = None, edges = None, X = None, y = None,
         method = 'transform', parent_grp = None, adapter = 'default', params = None
     ):
         self.experimenter = experimenter
         self.name = name
         self.role = role
         self.processor = processor
-        self.edges = edges if isinstance(edges, list) else [edges]
+        self.edges = edges if edges is not None else {}
         self.X = X
         self.y = y
         self.method = method
@@ -45,10 +45,17 @@ class NodeGroup():
     def get_attrs(self):
         attrs = {}
         parent_attrs = self.parent_grp.get_attrs() if self.parent_grp is not None else {}
-        parent_edges = parent_attrs.get('edges', list())
+        parent_edges = parent_attrs.get('edges', {})
         if parent_edges is None:
-            parent_edges = list()
-        attrs['edges'] = parent_edges + self.edges
+            parent_edges = {}
+        # edges 병합: 같은 key면 extend
+        merged_edges = {k: list(v) for k, v in parent_edges.items()}
+        for k, v in self.edges.items():
+            if k in merged_edges:
+                merged_edges[k].extend(v)
+            else:
+                merged_edges[k] = list(v)
+        attrs['edges'] = merged_edges
         # 다른 속성들은 None이 아니면 현재 값, None이면 부모로 올라가면서 찾기
         for attr_name in ['processor', 'X', 'y', 'method']:
             current_value = getattr(self, attr_name, None)
@@ -167,10 +174,10 @@ class Node():
         self.org_attr = org_attr  # 원본 속성 (processor, edges, X, y, method, params)
         self.processor = processor
         self.method = method
-        self.edges = edges
+        self.edges = edges if edges is not None else {}
         self.params = params if params is not None else {}
-        self.X = X
-        self.y = y
+        self.X = X  # edges의 key를 지정 (문자열)
+        self.y = y  # edges의 key를 지정 (문자열)
         self.use_cache = use_cache
         self.output_edges = []  # 이 노드를 입력으로 사용하는 노드들의 이름
         # adapter 인스턴스 가져오기
@@ -235,32 +242,34 @@ class Node():
         self.status = "built"
         self.save_info()
 
-    def _build_sub(self, train_t, train_v, fit_process):
+    def _build_sub(self, data_dict, fit_process):
         if self.method in ['transform', 'fit_transform']:
-            obj = TransformProcessor(self, self.processor, X = self.X, y = self.y, adapter = self.adapter_, **self.params)
+            obj = TransformProcessor(self, self.processor, adapter = self.adapter_, **self.params)
         else:
-            obj = PredictProcessor(self, self.processor, X = self.X, y = self.y, method = self.method, adapter = self.adapter_, **self.params)
+            obj = PredictProcessor(self, self.processor, method = self.method, adapter = self.adapter_, **self.params)
 
         start_time = time.time()
         if fit_process:
-            result = obj.fit_process(train_t, train_v)
+            result = obj.fit_process(data_dict, self.X, self.y)
         else:
             result = None
-            obj.fit(train_t, train_v)
+            obj.fit(data_dict, self.X, self.y)
         elapsed_time = time.time() - start_time
 
+        # X key로 shape 정보 가져오기
+        (train_X, train_v_X), _ = data_dict[self.X]
         info = {
             'build_id': str(uuid.uuid4()),
             'fit_time': elapsed_time,
-            'train_shape': train_t.get_shape() if train_t is not None else None,
-            'train_v_shape': train_v.get_shape() if train_v is not None else None
+            'train_shape': train_X.get_shape() if train_X is not None else None,
+            'train_v_shape': train_v_X.get_shape() if train_v_X is not None else None
         }
         return obj, result, info
 
     def _build_obj(self, train, fit_process):
         sub = list()
-        for (train_t, train_v), _ in train:
-            sub.append(self._build_sub(train_t, train_v, fit_process))
+        for data_dict in train:
+            sub.append(self._build_sub(data_dict, fit_process))
         return sub
 
     def start_experiment(self):
@@ -279,24 +288,26 @@ class Node():
                 objs = pkl.load(f)
         elif self.status == "finalized":
             raise RuntimeError(f"Node '{self.name}' is finalized and cannot be re-experimented")
-        
+
         objs = self._build_idx(idx)
         ret = list()
         it = self.experimenter.get_data(idx, self.edges)
         result_list = list()
-        for ((train_t, train_v), valid), (obj, train_, spec) in zip(it, objs):
+        for data_dict, (obj, train_, spec) in zip(it, objs):
+            # X key로 데이터 가져오기
+            (train_X, train_v_X), valid_X = data_dict[self.X]
             sub_result = {'spec': spec, 'object': obj}
             if include_output:
                 if train_ is None:
-                    train_result = obj.process(train_t)
+                    train_result = obj.process(train_X)
                 else:
                     train_result = train_
-                if train_v is not None:
-                    train_v_result = obj.process(train_v)
+                if train_v_X is not None:
+                    train_v_result = obj.process(train_v_X)
                 else:
                     train_v_result = None
                 sub_result['output_train'] = (train_result, train_v_result)
-                sub_result['output_valid'] = obj.process(valid)
+                sub_result['output_valid'] = obj.process(valid_X)
             yield sub_result
         if self.status is None and (not finalize):
             with open(filename, 'wb') as f:
@@ -319,7 +330,7 @@ class Node():
         self.status = "finalized"
         self.save_info()
     
-    def get_exp_obj(self, idx):
+    def get_objs(self, idx):
         if self.status != 'built':
             raise RuntimeError(f"Node '{self.name}' must be built before accessing objects (status='{self.status}')")
 
@@ -397,7 +408,7 @@ class Node():
         if result not in self.adapter_.result_objs:
             raise ValueError(f"{result} Unsupported result")
         result_func = self.adapter_.result_objs[result][0]
-        for i in self.get_exp_obj(idx):
+        for i in self.get_objs(idx):
             yield result_func(i[0], **params)
     
     @classmethod
@@ -519,21 +530,24 @@ class Node():
                 self.cache = list()
             else:
                 self.cache = None
-            for ((train_t, train_v), valid), (obj, train_, info) in zip(it, sub):
+            for data_dict, (obj, train_, info) in zip(it, sub):
+                # X key로 입력 데이터 가져오기
+                (train_X, train_v_X), valid_X = data_dict[self.X]
+
                 # train data 처리
                 if train_ is None:
-                    train_result = obj.process(train_t)
+                    train_result = obj.process(train_X)
                 else:
                     train_result = train_
 
                 # train_v data 처리
-                if train_v is not None:
-                    train_v_result = obj.process(train_v)
+                if train_v_X is not None:
+                    train_v_result = obj.process(train_v_X)
                 else:
                     train_v_result = None
 
                 # valid data 처리 (외부 fold의 valid)
-                valid_result = obj.process(valid)
+                valid_result = obj.process(valid_X)
 
                 # 필요하면 컬럼 필터링
                 if v is not None:
@@ -567,10 +581,12 @@ class Node():
                 self.cache_t = list()
             else:
                 self.cache_t = None
-            for (train, train_v), (obj, train_, info) in zip(it, sub):
-                train_result = obj.process(train) if train_ is None else train_
-                if train_v is not None:
-                    train_v_result = obj.process(train_v)
+            for data_dict, (obj, train_, info) in zip(it, sub):
+                # X key로 입력 데이터 가져오기
+                train_X, train_v_X = data_dict[self.X]
+                train_result = obj.process(train_X) if train_ is None else train_
+                if train_v_X is not None:
+                    train_v_result = obj.process(train_v_X)
                 else:
                     train_v_result = None
                 # 필요하면 컬럼 필터링
@@ -608,8 +624,8 @@ class Node():
         if self.grp.role == "pipe":
             sub = self.objs_[idx]
         else:
-            sub = self.get_exp_obj(idx)
-        
+            sub = self.get_objs(idx)
+
         if self.use_cache:
             self._unload_cache()
         def ret_func():
@@ -618,9 +634,11 @@ class Node():
             else:
                 self.cache_v = None
 
-            for valid, (obj, train_, info) in zip(it, sub):
+            for data_dict, (obj, train_, info) in zip(it, sub):
+                # X key로 valid 데이터 가져오기
+                valid_X = data_dict[self.X]
                 # valid data 처리 (외부 fold의 valid)
-                valid_result = obj.process(valid)
+                valid_result = obj.process(valid_X)
 
                 # 필요하면 컬럼 필터링
                 if v is not None:

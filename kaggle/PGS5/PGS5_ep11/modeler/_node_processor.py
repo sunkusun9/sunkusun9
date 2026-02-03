@@ -81,42 +81,47 @@ def resolve_columns(data, X, y=None, processor=None):
         return ret
 
 class TransformProcessor():
-    def __init__(self, node, transformer, X = None, y = None, adapter = None, **args):
+    def __init__(self, node, transformer, adapter = None, **args):
         self.node = node
         self.transformer = transformer
         self.params = args
-        self.X = X
-        self.y = y
         self.adapter = adapter
         self.output_vars = None
 
-    def fit(self, train, valid):
-        self.X_ = resolve_columns(train, self.X, self.y)
+    def fit(self, data_dict, X, y):
+        # X key로 데이터 가져오기
+        (train_X, train_v_X), valid_X = data_dict[X]
+        self.X_ = train_X.get_columns()
+
+        # y key로 데이터 가져오기 (있으면)
+        if y is not None and y in data_dict:
+            (train_y, train_v_y), valid_y = data_dict[y]
+            self.y_columns = train_y.get_columns()
+        else:
+            train_y, train_v_y, valid_y = None, None, None
+            self.y_columns = None
+
         params = self.adapter.get_params(self.params, logger = self.node.experimenter.logger) if self.adapter is not None else self.params
         self.obj = self.transformer(**params)
-        fit_params = {}
 
-        # DataWrapper에서 컬럼 선택
-        train_X = unwrap(train.select_columns(self.X_))
-
-        if self.y is None:
-            if self.adapter is not None:
-                valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
-                if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, logger = self.node.experimenter.logger)
-                else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, X_eval = valid_X, logger = self.node.experimenter.logger)
-            self.obj.fit(train_X, **fit_params)
+        # adapter에서 fit_params 생성
+        if self.adapter is not None:
+            fit_params = self.adapter.get_fit_params(
+                data_dict=data_dict, X=X, y=y, params=self.params,
+                logger=self.node.experimenter.logger
+            )
         else:
-            train_y = unwrap(train.select_columns(self.y))
-            if self.adapter is not None:
-                valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
-                valid_y = unwrap(valid.select_columns(self.y)) if valid is not None else None
-                if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, logger = self.node.experimenter.logger)
-                else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, X_eval = valid_X, y_eval = valid_y, logger = self.node.experimenter.logger)
-            self.obj.fit(train_X, train_y, **fit_params)
+            fit_params = {}
+
+        # DataWrapper에서 native로 변환
+        train_X_native = unwrap(train_X)
+
+        if train_y is None:
+            self.obj.fit(train_X_native, **fit_params)
+        else:
+            train_y_native = unwrap(train_y)
+            self.obj.fit(train_X_native, train_y_native, **fit_params)
+
         # 컬럼명 결정 (get_feature_names_out이 있으면 사용)
         if hasattr(self.obj, 'get_feature_names_out'):
             column_names = self.obj.get_feature_names_out().tolist()
@@ -128,37 +133,43 @@ class TransformProcessor():
             self.output_vars = column_names
         return self
 
-    def fit_process(self, train, valid):
-        self.X_ = resolve_columns(train, self.X, self.y)
+    def fit_process(self, data_dict, X, y):
+        # X key로 데이터 가져오기
+        (train_X, train_v_X), valid_X = data_dict[X]
+        self.X_ = train_X.get_columns()
+        train_index = train_X.get_index()
+
+        # y key로 데이터 가져오기 (있으면)
+        if y is not None and y in data_dict:
+            (train_y, train_v_y), valid_y = data_dict[y]
+            self.y_columns = train_y.get_columns()
+        else:
+            train_y, train_v_y, valid_y = None, None, None
+            self.y_columns = None
+
         params = self.adapter.get_params(self.params, logger = self.node.experimenter.logger) if self.adapter is not None else self.params
         self.obj = self.transformer(**params)
-        fit_params = {}
+
+        # adapter에서 fit_params 생성
+        if self.adapter is not None:
+            fit_params = self.adapter.get_fit_params(
+                data_dict=data_dict, X=X, y=y, params=self.params,
+                logger=self.node.experimenter.logger
+            )
+        else:
+            fit_params = {}
 
         # DataWrapper에서 native로 변환
-        train_X = unwrap(train.select_columns(self.X_))
-        train_index = train.get_index()
+        train_X_native = unwrap(train_X)
 
-        if self.y is None:
-            if self.adapter is not None:
-                valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
-                if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, logger = self.node.experimenter.logger)
-                else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, X_eval = valid_X, logger = self.node.experimenter.logger)
-            result = self.obj.fit_transform(train_X, **fit_params)
+        if train_y is None:
+            result = self.obj.fit_transform(train_X_native, **fit_params)
         else:
-            train_y = unwrap(train.select_columns(self.y))
-            if self.adapter is not None:
-                valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
-                valid_y = unwrap(valid.select_columns(self.y)) if valid is not None else None
-                if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, logger = self.node.experimenter.logger)
-                else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, X_eval = valid_X, y_eval = valid_y, logger = self.node.experimenter.logger)
-            result = self.obj.fit_transform(train_X, train_y, **fit_params)
+            train_y_native = unwrap(train_y)
+            result = self.obj.fit_transform(train_X_native, train_y_native, **fit_params)
 
         # train의 Wrapper 타입으로 변환
-        train_wrapper_class = type(train)
+        train_wrapper_class = type(train_X)
         # 컬럼명 결정 (get_feature_names_out이 있으면 사용)
         if hasattr(self.obj, 'get_feature_names_out'):
             column_names = self.obj.get_feature_names_out().tolist()
@@ -172,10 +183,9 @@ class TransformProcessor():
 
     def process(self, data):
         # DataWrapper에서 native로 변환
-        data_X = unwrap(data.select_columns(self.X_))
+        data_X = unwrap(data)
         data_index = data.get_index()
 
-        
         result = self.obj.transform(data_X)
 
         # data의 Wrapper 타입으로 변환
@@ -183,122 +193,127 @@ class TransformProcessor():
         return data_wrapper_class.from_output(result, self.output_vars, data_index)
 
 class PredictProcessor():
-    def __init__(self, node, estimator, X=None, y=None, method='predict', adapter = None, **args):
+    def __init__(self, node, estimator, method='predict', adapter = None, **args):
         self.node = node
         self.estimator = estimator
         self.params = args
-        self.X = X
-        self.y = y
         self.method = method
         self.output_vars = None
         self.adapter = adapter
+        self.y_columns = None
 
-    def fit(self, train, valid):
-        self.X_ = resolve_columns(train, self.X, self.y)
+    def fit(self, data_dict, X, y):
+        # X key로 데이터 가져오기
+        (train_X, train_v_X), valid_X = data_dict[X]
+        self.X_ = train_X.get_columns()
+
+        # y key로 데이터 가져오기 (있으면)
+        if y is not None and y in data_dict:
+            (train_y, train_v_y), valid_y = data_dict[y]
+            self.y_columns = train_y.get_columns()
+        else:
+            train_y, train_v_y, valid_y = None, None, None
+            self.y_columns = None
+
         # adapter가 있으면 params 조정 (callbacks 등 설정)
         params = self.adapter.get_params(self.params, logger = self.node.experimenter.logger) if self.adapter is not None else self.params
         self.obj = self.estimator(**params)
-        fit_params = {}
 
-        # DataWrapper에서 컬럼 선택
-        train_X = unwrap(train.select_columns(self.X_))
-
-        if self.y is None:
-            if self.adapter is not None:
-                valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
-                if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, logger = self.node.experimenter.logger)
-                else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, X_eval = valid_X, logger = self.node.experimenter.logger)
-            # 비지도학습 with specific columns
-            self.obj.fit(train_X, **fit_params)
+        # adapter에서 fit_params 생성
+        if self.adapter is not None:
+            fit_params = self.adapter.get_fit_params(
+                data_dict=data_dict, X=X, y=y, params=self.params,
+                logger=self.node.experimenter.logger
+            )
         else:
-            train_y = unwrap(train.select_columns(self.y))
-            if self.adapter is not None:
-                valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
-                valid_y = unwrap(valid.select_columns(self.y)) if valid is not None else None
-                if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, logger = self.node.experimenter.logger)
-                else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, X_eval = valid_X, y_eval = valid_y, logger = self.node.experimenter.logger)
+            fit_params = {}
+
+        # DataWrapper에서 native로 변환
+        train_X_native = unwrap(train_X)
+
+        if train_y is None:
+            # 비지도학습
+            self.obj.fit(train_X_native, **fit_params)
+        else:
+            train_y_native = unwrap(train_y)
             # 지도학습
-            self.obj.fit(train_X, train_y, **fit_params)
+            self.obj.fit(train_X_native, train_y_native, **fit_params)
 
         if self.method == 'predict':
             # y 변수명 결정
-            if self.y is None:
+            if self.y_columns is None:
                 y_name = 'prediction'
-            elif isinstance(self.y, list):
-                y_name = '_'.join(self.y)
             else:
-                y_name = self.y
+                y_name = '_'.join(self.y_columns)
 
             col_name = f"{self.node.name}__{y_name}"
             self.output_vars = [col_name]
         elif self.method == 'predict_proba':
             # y 변수명 결정
-            if self.y is None:
+            if self.y_columns is None:
                 y_name = 'prediction'
-            elif isinstance(self.y, list):
-                y_name = '_'.join(self.y)
             else:
-                y_name = self.y
+                y_name = '_'.join(self.y_columns)
 
             columns = [f"{self.node.name}__{y_name}_{i}" for i in self.obj.classes_]
             self.output_vars = columns
         return self
 
-    def fit_process(self, train, valid):
-        self.X_ = resolve_columns(train, self.X, self.y)
+    def fit_process(self, data_dict, X, y):
+        # X key로 데이터 가져오기
+        (train_X, train_v_X), valid_X = data_dict[X]
+        self.X_ = train_X.get_columns()
+        train_index = train_X.get_index()
+
+        # y key로 데이터 가져오기 (있으면)
+        if y is not None and y in data_dict:
+            (train_y, train_v_y), valid_y = data_dict[y]
+            self.y_columns = train_y.get_columns()
+        else:
+            train_y, train_v_y, valid_y = None, None, None
+            self.y_columns = None
+
         # adapter가 있으면 params 조정 (callbacks 등 설정)
-        params = self.adapter.get_params(self.param, logger = self.node.experimenter.loggers) if self.adapter is not None else self.params
+        params = self.adapter.get_params(self.params, logger = self.node.experimenter.logger) if self.adapter is not None else self.params
         self.obj = self.estimator(**params)
-        fit_params = {}
+
+        # adapter에서 fit_params 생성
+        if self.adapter is not None:
+            fit_params = self.adapter.get_fit_params(
+                data_dict=data_dict, X=X, y=y, params=self.params,
+                logger=self.node.experimenter.logger
+            )
+        else:
+            fit_params = {}
 
         # DataWrapper에서 native로 변환
-        train_X = unwrap(train.select_columns(self.X_))
-        train_index = train.get_index()
+        train_X_native = unwrap(train_X)
 
-        if self.y is None:
-            if self.adapter is not None:
-                valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
-                if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, logger = self.node.experimenter.logger)
-                else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, X_eval = valid_X, logger = self.node.experimenter.logger)
-            # 비지도학습 with specific columns
-            predictions = self.obj.fit_predict(train_X, **fit_params)
+        if train_y is None:
+            # 비지도학습
+            predictions = self.obj.fit_predict(train_X_native, **fit_params)
         else:
             # 지도학습
-            train_y = unwrap(train.select_columns(self.y))
-            if self.adapter is not None:
-                valid_X = unwrap(valid.select_columns(self.X_)) if valid is not None else None
-                valid_y = unwrap(valid.select_columns(self.y)) if valid is not None else None
-                if valid is None:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, logger = self.node.experimenter.logger)
-                else:
-                    fit_params = self.adapter.get_fit_params(X_train = train_X, y_train = train_y, X_eval = valid_X, y_eval = valid_y, logger = self.node.experimenter.logger)
-            predictions = self.obj.fit_predict(train_X, train_y, **fit_params)
+            train_y_native = unwrap(train_y)
+            predictions = self.obj.fit_predict(train_X_native, train_y_native, **fit_params)
 
         # 컬럼명 결정
-        if self.y is None:
+        if self.y_columns is None:
             y_name = 'prediction'
-        elif isinstance(self.y, list):
-            y_name = '_'.join(self.y)
         else:
-            y_name = self.y
+            y_name = '_'.join(self.y_columns)
 
         col_name = f"{self.node.name}__{y_name}"
         column_names = [col_name]
         self.output_vars = column_names
 
         # train의 Wrapper 타입으로 변환
-        train_wrapper_class = type(train)
+        train_wrapper_class = type(train_X)
         return train_wrapper_class.from_output(predictions, column_names, train_index)
 
     def process(self, data):
         # DataWrapper에서 native로 변환
-        data_X = unwrap(data.select_columns(self.X_))
+        data_X = unwrap(data)
         data_index = data.get_index()
 
         if self.method == 'predict':

@@ -87,11 +87,12 @@ def desc_pipeline(exp, max_depth=None, direction='TD'):
         # current_node를 edge로 가지는 child 노드들 찾기
         for name, node in exp.nodes.items():
             if name is not None:
-                for edge_name, _ in node.edges:
-                    if (current_node == 'Root' and edge_name is None) or (edge_name == current_node):
-                        # child 노드 발견
-                        if name not in node_priorities:
-                            queue.append((name, priority + 1))
+                for key, edge_list in node.edges.items():
+                    for edge_name, _ in edge_list:
+                        if (current_node == 'Root' and edge_name is None) or (edge_name == current_node):
+                            # child 노드 발견
+                            if name not in node_priorities:
+                                queue.append((name, priority + 1))
 
     # 2. Group 단위 우선순위 생성 (포함된 노드 중 가장 낮은 우선순위 = 가장 상위)
     grp_priorities = {}
@@ -235,16 +236,17 @@ def desc_pipeline(exp, max_depth=None, direction='TD'):
         for node_name in nodes:
             if node_name in exp.nodes:
                 node = exp.nodes[node_name]
-                for edge_name, edge_var in node.edges:
-                    if edge_name is None:
-                        # Root 연결
-                        incoming.add(('root', 'Root'))
-                    elif edge_name in node_to_top:
-                        # edge 노드의 최상위 노드 찾기
-                        edge_top = node_to_top[edge_name]
-                        # 같은 top node 내부 연결은 제외
-                        if not (top_item_type == edge_top[0] and top_item_name == edge_top[1]):
-                            incoming.add(edge_top)
+                for key, edge_list in node.edges.items():
+                    for edge_name, edge_var in edge_list:
+                        if edge_name is None:
+                            # Root 연결
+                            incoming.add(('root', 'Root'))
+                        elif edge_name in node_to_top:
+                            # edge 노드의 최상위 노드 찾기
+                            edge_top = node_to_top[edge_name]
+                            # 같은 top node 내부 연결은 제외
+                            if not (top_item_type == edge_top[0] and top_item_name == edge_top[1]):
+                                incoming.add(edge_top)
 
         return incoming
 
@@ -308,12 +310,17 @@ def desc_node(exp, node_name, direction='TD', show_params=False):
             # current를 edge로 가지는 노드들 찾기
             for name, node in exp.nodes.items():
                 if name is not None and name not in visited:
-                    for edge_name, _ in node.edges:
-                        if (current == 'Root' and edge_name is None) or (edge_name == current):
-                            new_path = path + [name]
-                            new_visited = visited | {name}
-                            queue.append((new_path, new_visited))
+                    found = False
+                    for key, edge_list in node.edges.items():
+                        if found:
                             break
+                        for edge_name, _ in edge_list:
+                            if (current == 'Root' and edge_name is None) or (edge_name == current):
+                                new_path = path + [name]
+                                new_visited = visited | {name}
+                                queue.append((new_path, new_visited))
+                                found = True
+                                break
 
         return paths
 
@@ -391,24 +398,61 @@ def desc_node(exp, node_name, direction='TD', show_params=False):
                 lines.append(f"    style node_{name} fill:#c8e6c9,stroke:#388e3c,stroke-width:2px")
             lines.append("")
 
-    # 경로상의 엣지만 표시
-    edges_set = set()
-    for path in paths:
-        for i in range(len(path) - 1):
-            source = path[i]
-            target = path[i + 1]
-            if source == 'Root':
-                edges_set.add(("Root", f"node_{target}"))
-            else:
-                edges_set.add((f"node_{source}", f"node_{target}"))
+    # 경로상의 엣지 수집 (key별로 구분)
+    # edges_dict: {(source, target): set of keys}
+    edges_dict = {}
+    for name in all_nodes:
+        if name in exp.nodes:
+            node = exp.nodes[name]
+            for key, edge_list in node.edges.items():
+                for edge_name, _ in edge_list:
+                    if edge_name is None:
+                        source = "Root"
+                    else:
+                        source = f"node_{edge_name}"
+                    target = f"node_{name}"
+                    # source가 경로에 포함된 경우만
+                    source_node = edge_name if edge_name else 'Root'
+                    if source_node in all_nodes or source_node == 'Root':
+                        edge_key = (source, target)
+                        if edge_key not in edges_dict:
+                            edges_dict[edge_key] = set()
+                        edges_dict[edge_key].add(key)
 
-    for source, target in sorted(edges_set):
-        lines.append(f"    {source} --> {target}")
+    # 엣지 출력 (key 표시)
+    for (source, target), keys in sorted(edges_dict.items()):
+        keys_str = ','.join(sorted(keys))
+        if keys_str != 'X':
+            lines.append(f"    {source} -->|{keys_str}| {target}")
+        else:
+            lines.append(f"    {source} --> {target}")
 
     lines.append("```")
     lines.append("")
     target_display = get_grp_path(exp.nodes[node_name])
     lines.append(f"**Path from Root to '{target_display}' ({len(paths)} path(s) found)**")
+
+    # Edge 정보 테이블 추가
+    target_node = exp.nodes[node_name]
+    lines.append("")
+    lines.append("### Edges")
+    lines.append("")
+    lines.append("| Key | Node | Var |")
+    lines.append("|-----|------|-----|")
+
+    for key in sorted(target_node.edges.keys()):
+        edge_list = target_node.edges[key]
+        for edge_name, var_spec in edge_list:
+            if edge_name is None:
+                node_display = "Root"
+            else:
+                edge_node = exp.nodes.get(edge_name)
+                if edge_node:
+                    node_display = get_grp_path(edge_node)
+                else:
+                    node_display = edge_name
+            var_display = "*" if var_spec is None else f"`{var_spec}`"
+            lines.append(f"| {key} | {node_display} | {var_display} |")
 
     return "\n".join(lines)
 

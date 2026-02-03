@@ -5,11 +5,11 @@ from ._node_processor import resolve_columns
 
 class Metric:
     def __init__(
-        self, name, experimenter, target_edges, output_var, metric_func, include_train = False
+        self, name, experimenter, target_vars, output_var, metric_func, include_train = False
     ):
         self.experimenter = experimenter
         self.name = name
-        self.target_edges = target_edges
+        self.target_vars = target_vars
         self.output_var = output_var
         self.include_train = include_train
         self.metric_func = metric_func
@@ -32,11 +32,11 @@ class Metric:
         return self.metric_dir
 
     def save(self):
-        """name, target_edges, output_var, include_train, metric_func, metrics를 파일로 저장"""
+        """name, target_vars, output_var, include_train, metric_func, metrics를 파일로 저장"""
         self._ensure_metric_dir()
         data = {
             'name': self.name,
-            'target_edges': self.target_edges,
+            'target_vars': self.target_vars,
             'output_var': self.output_var,
             'include_train': self.include_train,
             'metric_func': self.metric_func,
@@ -46,13 +46,13 @@ class Metric:
             pickle.dump(data, f)
 
     def load(self):
-        """파일에서 name, target_edges, output_var, include_train, metric_func, metrics를 로드"""
+        """파일에서 name, target_vars, output_var, include_train, metric_func, metrics를 로드"""
         if not self.metric_path.exists():
             raise FileNotFoundError(f"Metric data not found: {self.metric_path}")
         with open(self.metric_path, 'rb') as f:
             data = pickle.load(f)
         self.name = data['name']
-        self.target_edges = data['target_edges']
+        self.target_vars = data['target_vars']
         self.output_var = data['output_var']
         self.include_train = data['include_train']
         self.metric_func = data['metric_func']
@@ -80,7 +80,7 @@ class Metric:
         metric = cls(
             name=data['name'],
             experimenter=experimenter,
-            target_edges=data['target_edges'],
+            target_vars=data['target_vars'],
             output_var=data['output_var'],
             metric_func=data['metric_func'],
             include_train=data['include_train']
@@ -90,9 +90,11 @@ class Metric:
         return metric
 
     def _get_data(self, idx):
-        return list(
-            self.experimenter.get_data(idx, self.target_edges)
-        )
+        # target_vars를 임시 key로 감싸서 get_data 호출
+        temp_edges = {'_target': self.target_vars}
+        result = list(self.experimenter.get_data(idx, temp_edges))
+        # '_target' key의 데이터만 추출
+        return [data_dict['_target'] for data_dict in result]
 
     def _get_metric(self, target_data, result_data):
         (true_train_t, true_train_v), true_valid = target_data
