@@ -81,10 +81,10 @@ def resolve_columns(data, X, y=None, processor=None):
         return ret
 
 class TransformProcessor():
-    def __init__(self, node, transformer, adapter = None, **args):
+    def __init__(self, node, transformer, adapter = None, params = {}):
         self.node = node
         self.transformer = transformer
-        self.params = args
+        self.params = params
         self.adapter = adapter
         self.output_vars = None
 
@@ -193,10 +193,10 @@ class TransformProcessor():
         return data_wrapper_class.from_output(result, self.output_vars, data_index)
 
 class PredictProcessor():
-    def __init__(self, node, estimator, method='predict', adapter = None, **args):
+    def __init__(self, node, estimator, method='predict', adapter = None, params = {}):
         self.node = node
         self.estimator = estimator
-        self.params = args
+        self.params = params
         self.method = method
         self.output_vars = None
         self.adapter = adapter

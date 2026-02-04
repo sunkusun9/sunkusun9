@@ -56,16 +56,16 @@ def desc_spec(exp):
 
     return "\n".join(lines)
 
-def desc_pipeline(exp, max_depth=None, direction='TD'):
+def desc_pipeline(pipeline, max_depth=None, direction='TD'):
     """파이프라인 구조를 Mermaid Markdown으로 반환
 
     Args:
-        exp: Experimenter 인스턴스
+        pipeline: Pipeline 인스턴스
         max_depth: 최대 표시 깊이 (None이면 무제한)
         direction: 그래프 방향 ('TD': Top-Down, 'LR': Left-Right)
     """
     # 노드 개수 계산 함수
-    def count_nodes_in_group(grp):
+    def count_nodes_in_group(pipeline):
         count = len(grp.nodes)
         for child_grp in grp.child_grps:
             count += count_nodes_in_group(child_grp)
@@ -85,7 +85,7 @@ def desc_pipeline(exp, max_depth=None, direction='TD'):
         node_priorities[current_node] = priority
 
         # current_node를 edge로 가지는 child 노드들 찾기
-        for name, node in exp.nodes.items():
+        for name, node in pipeline.nodes.items():
             if name is not None:
                 for key, edge_list in node.edges.items():
                     for edge_name, _ in edge_list:
@@ -96,7 +96,7 @@ def desc_pipeline(exp, max_depth=None, direction='TD'):
 
     # 2. Group 단위 우선순위 생성 (포함된 노드 중 가장 낮은 우선순위 = 가장 상위)
     grp_priorities = {}
-    for grp_name, grp in exp.grps.items():
+    for grp_name, grp in pipeline.grps.items():
         if len(grp.nodes) > 0:
             grp_priorities[grp_name] = min(node_priorities.get(node_name, float('inf')) for node_name in grp.nodes)
         else:
@@ -104,21 +104,21 @@ def desc_pipeline(exp, max_depth=None, direction='TD'):
 
     # 3. 소속 그룹이 없는 노드와 최상위 그룹 수집
     grouped_nodes = set()
-    for grp in exp.grps.values():
+    for grp in pipeline.grps.values():
         grouped_nodes.update(grp.nodes)
 
-    ungrouped_nodes = [name for name in exp.nodes.keys() if name is not None and name not in grouped_nodes]
+    ungrouped_nodes = [name for name in pipeline.nodes.keys() if name is not None and name not in grouped_nodes]
     top_level_items = []
 
     # 최상위 그룹 (parent_grp가 None인 그룹)
-    for grp_name, grp in exp.grps.items():
+    for grp_name, grp in pipeline.grps.items():
         if grp.parent_grp is None:
             top_level_items.append(('group', grp))
 
     # 소속 그룹이 없는 노드들
     for node_name in ungrouped_nodes:
-        if node_name in exp.nodes:
-            top_level_items.append(('node', exp.nodes[node_name]))
+        if node_name in pipeline.nodes:
+            top_level_items.append(('node', pipeline.nodes[node_name]))
 
     # 우선순위로 정렬
     def get_priority(item):
@@ -158,8 +158,8 @@ def desc_pipeline(exp, max_depth=None, direction='TD'):
             for child_grp in grp.child_grps:
                 items.append(('group', child_grp))
             for node_name in grp.nodes:
-                if node_name in exp.nodes:
-                    items.append(('node', exp.nodes[node_name]))
+                if node_name in pipeline.nodes:
+                    items.append(('node', pipeline.nodes[node_name]))
 
             # 우선순위로 정렬
             items.sort(key=get_priority)
@@ -220,7 +220,7 @@ def desc_pipeline(exp, max_depth=None, direction='TD'):
 
         # top_item에 속한 모든 노드 찾기
         if top_item_type == 'group':
-            grp = exp.grps[top_item_name]
+            grp = pipeline.grps[top_item_name]
             def collect_nodes_in_group(grp):
                 nodes = []
                 for node_name in grp.nodes:
@@ -234,8 +234,8 @@ def desc_pipeline(exp, max_depth=None, direction='TD'):
 
         # 각 노드의 edges 확인
         for node_name in nodes:
-            if node_name in exp.nodes:
-                node = exp.nodes[node_name]
+            if node_name in pipeline.nodes:
+                node = pipeline.nodes[node_name]
                 for key, edge_list in node.edges.items():
                     for edge_name, edge_var in edge_list:
                         if edge_name is None:
@@ -281,11 +281,11 @@ def desc_pipeline(exp, max_depth=None, direction='TD'):
 
     return "\n".join(lines)
 
-def desc_node(exp, node_name, direction='TD', show_params=False):
+def desc_node(pipeline, node_name, direction='TD', show_params=False):
     """특정 노드까지의 연결 구조를 Mermaid Markdown으로 반환
 
     Args:
-        exp: Experimenter 인스턴스
+        pipeline: Pipeline 인스턴스
         node_name: 대상 노드 이름
         direction: 그래프 방향 ('TD': Top-Down, 'LR': Left-Right)
         show_params: True이면 노드의 파라미터 정보를 표시 (default: False)
@@ -308,7 +308,7 @@ def desc_node(exp, node_name, direction='TD', show_params=False):
                 continue
 
             # current를 edge로 가지는 노드들 찾기
-            for name, node in exp.nodes.items():
+            for name, node in pipeline.nodes.items():
                 if name is not None and name not in visited:
                     found = False
                     for key, edge_list in node.edges.items():
@@ -360,8 +360,8 @@ def desc_node(exp, node_name, direction='TD', show_params=False):
 
     # 각 노드를 subgraph로 생성
     for name in sorted(all_nodes):
-        if name in exp.nodes:
-            node = exp.nodes[name]
+        if name in pipeline.nodes:
+            node = pipeline.nodes[name]
 
             display_name = get_grp_path(node)
             lines.append(f"    subgraph node_{name}[\"{display_name}\"]")
@@ -402,8 +402,8 @@ def desc_node(exp, node_name, direction='TD', show_params=False):
     # edges_dict: {(source, target): set of keys}
     edges_dict = {}
     for name in all_nodes:
-        if name in exp.nodes:
-            node = exp.nodes[name]
+        if name in pipeline.nodes:
+            node = pipeline.nodes[name]
             for key, edge_list in node.edges.items():
                 for edge_name, _ in edge_list:
                     if edge_name is None:
@@ -429,11 +429,11 @@ def desc_node(exp, node_name, direction='TD', show_params=False):
 
     lines.append("```")
     lines.append("")
-    target_display = get_grp_path(exp.nodes[node_name])
+    target_display = get_grp_path(pipeline.nodes[node_name])
     lines.append(f"**Path from Root to '{target_display}' ({len(paths)} path(s) found)**")
 
     # Edge 정보 테이블 추가
-    target_node = exp.nodes[node_name]
+    target_node = pipeline.nodes[node_name]
     lines.append("")
     lines.append("### Edges")
     lines.append("")
@@ -446,7 +446,7 @@ def desc_node(exp, node_name, direction='TD', show_params=False):
             if edge_name is None:
                 node_display = "Root"
             else:
-                edge_node = exp.nodes.get(edge_name)
+                edge_node = pipeline.nodes.get(edge_name)
                 if edge_node:
                     node_display = get_grp_path(edge_node)
                 else:
