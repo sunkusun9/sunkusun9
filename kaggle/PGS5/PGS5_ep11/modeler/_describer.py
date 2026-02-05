@@ -67,7 +67,7 @@ def desc_pipeline(pipeline, max_depth=None, direction='TD'):
     # 노드 개수 계산 함수
     def count_nodes_in_group(pipeline):
         count = len(grp.nodes)
-        for child_grp in grp.child_grps:
+        for child_grp in grp.children:
             count += count_nodes_in_group(child_grp)
         return count
 
@@ -110,12 +110,10 @@ def desc_pipeline(pipeline, max_depth=None, direction='TD'):
     ungrouped_nodes = [name for name in pipeline.nodes.keys() if name is not None and name not in grouped_nodes]
     top_level_items = []
 
-    # 최상위 그룹 (parent_grp가 None인 그룹)
     for grp_name, grp in pipeline.grps.items():
-        if grp.parent_grp is None:
+        if grp.parent is None:
             top_level_items.append(('group', grp))
 
-    # 소속 그룹이 없는 노드들
     for node_name in ungrouped_nodes:
         if node_name in pipeline.nodes:
             top_level_items.append(('node', pipeline.nodes[node_name]))
@@ -153,9 +151,8 @@ def desc_pipeline(pipeline, max_depth=None, direction='TD'):
             result.append(f"{indent_str}    grp_{grp.name}_count[\"{node_count} node(s)\"]")
             result.append(f"{indent_str}    style grp_{grp.name}_count fill:#f5f5f5,stroke:#9e9e9e,stroke-dasharray: 5 5")
         else:
-            # 그룹 내부의 child_grps와 nodes 수집
             items = []
-            for child_grp in grp.child_grps:
+            for child_grp in grp.children:
                 items.append(('group', child_grp))
             for node_name in grp.nodes:
                 if node_name in pipeline.nodes:
@@ -202,7 +199,7 @@ def desc_pipeline(pipeline, max_depth=None, direction='TD'):
                 nodes = []
                 for node_name in grp.nodes:
                     nodes.append(node_name)
-                for child_grp in grp.child_grps:
+                for child_grp in grp.children:
                     nodes.extend(collect_nodes_in_group(child_grp))
                 return nodes
 
@@ -225,7 +222,7 @@ def desc_pipeline(pipeline, max_depth=None, direction='TD'):
                 nodes = []
                 for node_name in grp.nodes:
                     nodes.append(node_name)
-                for child_grp in grp.child_grps:
+                for child_grp in grp.children:
                     nodes.extend(collect_nodes_in_group(child_grp))
                 return nodes
             nodes = collect_nodes_in_group(grp)
@@ -290,7 +287,7 @@ def desc_node(pipeline, node_name, direction='TD', show_params=False):
         direction: 그래프 방향 ('TD': Top-Down, 'LR': Left-Right)
         show_params: True이면 노드의 파라미터 정보를 표시 (default: False)
     """
-    if node_name not in exp.nodes or node_name is None:
+    if node_name not in pipeline.nodes or node_name is None:
         return f"Node '{node_name}' not found"
 
     # Root에서 node_name까지의 경로 찾기 (BFS)
@@ -347,14 +344,17 @@ def desc_node(pipeline, node_name, direction='TD', show_params=False):
     all_nodes.discard('Root')
 
     # 노드의 grp 경로를 구하는 헬퍼
-    def get_grp_path(node):
-        if node.grp is None:
-            return node.name
+    def get_grp_path(node_name):
+        if node is None:
+            return node
         parts = []
-        grp = node.grp
-        while grp is not None:
-            parts.insert(0, grp.name)
-            grp = grp.parent_grp
+        node_obj = pipeline.get_node(node_name)
+        if node_obj is None:
+            return node_name
+        grp_obj = pipeline.get_grp(node_obj.grp)
+        while grp_obj is not None:
+            parts.insert(0, grp_obj.name)
+            grp_obj = pipeline.get_grp(grp_obj.parent)
         parts.append(node.name)
         return '/'.join(parts)
 
@@ -363,7 +363,7 @@ def desc_node(pipeline, node_name, direction='TD', show_params=False):
         if name in pipeline.nodes:
             node = pipeline.nodes[name]
 
-            display_name = get_grp_path(node)
+            display_name = get_grp_path(name)
             lines.append(f"    subgraph node_{name}[\"{display_name}\"]")
 
             if show_params:

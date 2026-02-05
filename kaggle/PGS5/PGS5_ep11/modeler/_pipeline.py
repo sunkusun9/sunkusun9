@@ -1,17 +1,14 @@
 import re
 from ._describer import desc_pipeline, desc_node
-
+from .adapter  import get_adapter
 class PipelineGroup:
     def __init__(
-        self, name, role, processor=None, edges=None, X=None, y=None,
-        method=None, parent=None, adapter='default', params=None
+        self, name, role, processor=None, edges=None, method=None, parent=None, adapter=None, params=None
     ):
         self.name = name
         self.role = role  # 'stage' or 'head'
         self.processor = processor
         self.edges = edges if edges is not None else {}
-        self.X = X
-        self.y = y
         self.method = method
         self.parent = parent  # parent group name (str)
         self.adapter = adapter
@@ -28,10 +25,8 @@ class PipelineGroup:
                 'edges': {},
                 'params': {},
                 'processor': None,
-                'X': None,
-                'y': None,
                 'method': None,
-                'adapter': 'default'
+                'adapter': None
             }
         else:
             parent_attrs = grps[self.parent].get_attrs(grps)
@@ -44,15 +39,23 @@ class PipelineGroup:
             for k, v in parent_attrs['params'].items():
                 if k not in params:
                     params[k] = v
+        processor = parent_attrs['processor'] if self.processor is None else self.processor
+        if self.adapter is None:
+            if parent_attrs['adapter'] is not None:
+                adapter = parent_attrs['adapter']
+            else:
+                adapter = None
+        else:
+            adapter = self.adapter
         self.attrs = {
             'name': self.name,
             'edges': edges,
             'parent': self.parent,
-            'adapter': self.adapter,
+            'adapter': adapter,
             'params': params,
             'children': self.children,
         }
-        for i in ['role', 'processor', 'X', 'y', 'method']:
+        for i in ['role', 'processor', 'method']:
             self.attrs[i] = parent_attrs.get(i) if getattr(self, i) is None else getattr(self, i)
 
         return self.attrs
@@ -72,15 +75,12 @@ class PipelineGroup:
 
 class PipelineNode:
     def __init__(
-        self, name, grp, processor=None, edges=None, X=None, y=None,
-        method=None, adapter='default', params=None
+        self, name, grp, processor=None, edges=None, method=None, adapter=None, params=None
     ):
         self.name = name
         self.grp = grp  # group name (str)
         self.processor = processor
         self.edges = edges if edges is not None else {}
-        self.X = X
-        self.y = y
         self.method = method
         self.adapter = adapter
         self.params = params if params is not None else {}
@@ -90,7 +90,7 @@ class PipelineNode:
 
     def copy(self):
         ret = PipelineNode(
-            self.name, self.grp, self.processor, self.edges.copy(), self.X, self.y,
+            self.name, self.grp, self.processor, self.edges.copy(),
             self.method, self.adapter, self.params.copy()
         )
         ret.output_edges = self.output_edges.copy()
@@ -109,14 +109,23 @@ class PipelineNode:
             for k, v in grp_attrs['params'].items():
                 if k not in params:
                     params[k] = v
+        processor = grp_attrs['processor'] if self.processor is None else self.processor
+        if self.adapter is None:
+            if grp_attrs['adapter'] is None:
+                adapter = get_adapter(processor)
+            else:
+                adapter = grp_attrs['adapter']
+        else:
+            adapter = self.adapter
         self.attrs = {
             'name': self.name,
             'grp': self.grp,
             'edges': edges,
-            'adapter': self.adapter,
+            'processor': processor,
+            'adapter': adapter,
             'params': params,
         }
-        for i in ['role', 'processor', 'X', 'y', 'method']:
+        for i in ['processor', 'method']:
             self.attrs[i] = grp_attrs.get(i) if getattr(self, i) is None else getattr(self, i)
 
         return self.attrs
@@ -129,6 +138,7 @@ class Pipeline:
     def __init__(self):
         self.nodes = {}
         self.grps = {}
+        self.nodes = {None: PipelineNode("Data_Source", None, None, None, None, None)}
 
     def _validate_name(self, name):
         if name is None:
@@ -219,10 +229,10 @@ class Pipeline:
                     queue.append((desc_node, new_priority))
 
         sorted_nodes = sorted(priorities.items(), key=lambda x: x[1])
-        return [self.nodes[i[0]] for i in sorted_nodes]
+        return [i[0] for i in sorted_nodes if i[0] is not None]
 
     def set_grp(
-            self, name, role=None, processor=None, edges=None, X=None, y=None, method=None, parent=None, adapter=None, params=None, replace=False
+            self, name, role=None, processor=None, edges=None, method=None, parent=None, adapter=None, params=None, replace=False
         ):
         self._validate_name(name)
         if name in self.nodes:
@@ -241,7 +251,7 @@ class Pipeline:
         if name not in self.grps:
             self._check_edges(edges)
             grp = PipelineGroup(
-                name, role, processor=processor, edges=edges, X=X, y=y, method=method, parent=parent, adapter=adapter, params=params
+                name, role, processor=processor, edges=edges, method=method, parent=parent, adapter=adapter, params=params
             )
 
             if parent is not None:
@@ -249,7 +259,7 @@ class Pipeline:
 
             self.grps[name] = grp
             return {
-                "result": "new", "obj": grp
+                "result": "new", "obj": grp, "affected_nodes": list()
             }
         elif not replace:
             raise ValueError(f"Group '{name}' already exists. Use replace=True to update.")
@@ -274,10 +284,6 @@ class Pipeline:
             grp.processor = processor
         if edges is not None and len(edges) > 0:
             grp.edges = edges
-        if X is not None:
-            grp.X = X
-        if y is not None:
-            grp.y = y
         if method is not None:
             grp.method = method
         if adapter is not None:
@@ -318,7 +324,10 @@ class Pipeline:
         return {
             "result": "update", "affected_nodes": affected_nodes, "old_grp": old_grp, "grp": grp
         }
-
+    
+    def get_grp(self, name):
+        return self.grps.get(name, None)
+    
     def rename_grp(self, name_from, name_to):
         self._validate_name(name_to)
 
@@ -380,24 +389,17 @@ class Pipeline:
         return result
 
     def get_node_names(self, query):
-        if isinstance(query, str):
-            if query not in self.grps:
-                return []
-
-            result = []
-            def collect_nodes(grp):
-                result.extend(grp.nodes)
-                for child_name in grp.children:
-                    collect_nodes(self.grps[child_name])
-
-            collect_nodes(self.grps[query])
-            return result
-
-        elif isinstance(query, re.Pattern):
-            return [name for name in self.nodes.keys() if name is not None and query.search(name)]
-
+        if query is None:
+            # 기존 동작: 모든 root group의 노드
+            node_names = list(self.nodes.keys())
+        elif isinstance(query, list):
+            node_names = [n for n in nodes if n in self.nodes]
+        elif isinstance(query, str):
+            pat = re.compile(query)
+            node_names = [k for k in self.nodes.keys() if k is not None and pat.search(k)]
         else:
-            raise ValueError(f"query must be str or re.Pattern, got {type(query)}")
+            raise ValueError(f"nodes must be None, list, or str, got {type(nodes)}")
+        return node_names
 
     def remove_node(self, name):
         if name not in self.nodes:
@@ -441,8 +443,7 @@ class Pipeline:
                             parent_node.output_edges.append(node_name)
 
     def set_node(
-        self, name, grp, processor=None, edges=None, X=None, y=None,
-        method=None, adapter='default', params=None, replace=False
+        self, name, grp, processor=None, edges=None, method=None, adapter=None, params=None, replace=False
     ):
         self._validate_name(name)
 
@@ -472,7 +473,7 @@ class Pipeline:
             old_output_edges = old_node.output_edges
 
         node = PipelineNode(
-            name, grp, processor, edges, X=X, y=y, method=method, adapter=adapter, params=params
+            name, grp, processor, edges, method=method, adapter=adapter, params=params
         )
 
         grp_obj = self.grps[grp]
@@ -519,6 +520,13 @@ class Pipeline:
             'obj': node
         }
 
+    def get_node(self, name):
+        return self.nodes.get(name, None)
+
+    def get_node_attrs(self, name):
+        node = self.get_node(name)
+        return node.get_attrs(self.get_grp(node.grp))
+    
     def get_parents(self, node_name):
         if node_name not in self.nodes:
             return []
@@ -535,26 +543,6 @@ class Pipeline:
             current_grp = current_grp.parent_grp
 
         return result
-
-    def get_node_names(self, query):
-        if isinstance(query, str):
-            if query not in self.grps:
-                return []
-
-            result = []
-            def collect_nodes(grp):
-                result.extend(grp.nodes)
-                for child_grp in grp.child_grps:
-                    collect_nodes(child_grp)
-
-            collect_nodes(self.grps[query])
-            return result
-
-        elif isinstance(query, re.Pattern):
-            return [name for name in self.nodes.keys() if name is not None and query.search(name)]
-
-        else:
-            raise ValueError(f"query must be str or re.Pattern, got {type(query)}")
 
     def desc_pipeline(self, max_depth=None, direction='TD'):
         """파이프라인 구조를 Mermaid Markdown으로 반환

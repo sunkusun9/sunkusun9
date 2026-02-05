@@ -77,7 +77,7 @@ def subset_poly(columns, vars, processor=None):
         vars_, degree=degree, interaction_only=interaction_only, include_bias=include_bias
     ))
 
-    node_name = processor.node.name
+    node_name = processor.name
     prefix = f"{node_name}__"
 
     mask = []

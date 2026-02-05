@@ -72,9 +72,9 @@ class XGBoostAdapter(ModelAdapter):
             fit_params['verbose'] = False
 
         # data_dict에서 데이터 추출
-        (train_X, train_v_X), valid_X = data_dict[X]
-        if y is not None and y in data_dict:
-            (train_y, train_v_y), valid_y = data_dict[y]
+        (train_X, train_v_X), valid_X = data_dict['X']
+        if 'y' in data_dict:
+            (train_y, train_v_y), valid_y = data_dict['y']
         else:
             train_y, train_v_y, valid_y = None, None, None
 

@@ -12,20 +12,21 @@ import pandas as pd
 from sklearn.model_selection import ShuffleSplit
 
 from ._data_wrapper import wrap, unwrap
-from ._node import NodeGroup, Node, RootNode
+from ._expobj import HeadObj, StageObj
 from ._describer import desc_spec, desc_node_vars
 from ._metric import Metric
 from ._stacking import Stacking
 from ._logger import DefaultLogger
 
-from _pipeline import Pipeline
+from ._pipeline import Pipeline
+from ._node_processor import resolve_columns
 
 class DataCache():
-    def __init__():
+    def __init__(self):
         self.cache_dic = {}
 
-    def get_data(self. node, typ, idx, v):
-        key = (node, typ, idx, v)
+    def get_data(self, node, typ, idx, v):
+        key = (node, typ, idx, tuple(v) if type(v) == list else None)
         if key in self.cache_dic:
             def ret_func():
                 for i in self.cache_dic[key]:
@@ -34,14 +35,13 @@ class DataCache():
         else:
             None
     def put_data(self, node, typ, idx, v, data):
-        key = (node, typ, idx, v)
+        key = (node, typ, idx, tuple(v) if type(v) == list else None)
         self.cache_dic[key] = data
 
 class Experimenter():
     def __init__(
             self, data, path, data_names = None, sp = ShuffleSplit(n_splits=1, random_state=1), sp_v=None, 
-            splitter_params=None, title=None, data_key=None,
-            logger = DefaultLogger(level=['info', 'progress'])
+            splitter_params=None, title=None, data_key=None, logger = DefaultLogger(level=['info', 'progress'])
         ):
         self.logger = logger
         self.path = Path(path)
@@ -51,9 +51,7 @@ class Experimenter():
         self.train_idx_list = list()
         self.valid_idx_list = list()
         data_native = data
-        data = wrap(data)
-        self.root = data
-
+        self.data = wrap(data)
         # 실험 타이틀 저장
         self.title = title
 
@@ -69,13 +67,13 @@ class Experimenter():
         split_params = {}
 
         if data_names is None:
-            data_names = data.get_columns()
+            data_names = self.data.get_columns()
         for k, v in self.splitter_params.items():
-            split_params[k] = unwrap(data.select_columns(v))
+            split_params[k] = unwrap(self.data.select_columns(v))
 
         for train_idx, valid_idx in sp.split(data_native, **split_params):
             if sp_v is not None:
-                train_data = data.iloc(train_idx)
+                train_data = self.data.iloc(train_idx)
                 train_data_native = unwrap(train_data)
 
                 inner_split_params = {'X': train_data_native}
@@ -93,7 +91,7 @@ class Experimenter():
             self.valid_idx_list.append(valid_idx)
 
         self.pipeline = Pipeline()
-        self.nodes = {None: RootNode(self, data)}
+        self.node_objs = {}
         self.cache = DataCache()
         self.grps = {}
         self.metric = {}
@@ -218,26 +216,25 @@ class Experimenter():
         if self.path is None:
             return None
         if isinstance(grp, str):
-            grp = self.grps[grp]
+            grp = self.pipeline.get_grp(grp)
         path_parts = [grp.name]
-        current = grp.parent_grp
+        current = self.pipeline.get_grp(grp.parent)
         while current is not None:
             path_parts.insert(0, current.name)
-            current = current.parent_grp
+            current = self.pipeline.get_grp(current.parent)
         return self.path / '/'.join(path_parts)
 
     def get_node_path(self, node):
         if isinstance(node, str):
-            node = self.nodes[node]
-        grp_path = self.experimenter.get_grp_path(self.node.grp)
+            node = self.pipeline.get_node(node)
+        grp_path = self.get_grp_path(node.grp)
         return grp_path / node.name
 
-    def set_grp(self, name, role=None, processor=None, edges=None, X=None, y=None, method=None, parent=None, adapter=None, params=None, replace = False):
+    def set_grp(self, name, role=None, processor=None, edges=None, method=None, parent=None, adapter=None, params=None, replace = False):
         self._check_open()
         result_obj = self.pipeline.set_grp(
-            name, role, processor, edges, X, y, method, parent, adapter, params, replace
+            name, role, processor, edges, method, parent, adapter, params, replace
         )
-        
         
         node_to_initialize = result_obj['affected_nodes']
         for node in node_to_initialize:
@@ -249,17 +246,20 @@ class Experimenter():
         for v in self.stacking.values():
             v.reset_nodes(node_to_initialize)
 
-        new_grp_path = self.get_grp_path(grp)
-        if old_grp_path != new_grp_path:
-            os.makedirs(new_grp_path, exist_ok=True)
-            for fname in os.listdir(old_grp_path):
-                src_path = os.path.join(old_grp_path, fname)
-                dst_path = os.path.join(new_grp_path, fname)
-                shutil.move(src_path, dst_path)
+        new_grp_path = self.get_grp_path(result_obj['obj'])
 
-        self.logger.info(f"Group '{name}' updated, {len(node_to_initialize)} node(s) affected")
+        if "old_grp" in result_obj:
+            old_grp_path = self.get_grp_path(result_obj['old_obj'])
+            if old_grp_path != new_grp_path:
+                os.makedirs(new_grp_path, exist_ok=True)
+                for fname in os.listdir(old_grp_path):
+                    src_path = os.path.join(old_grp_path, fname)
+                    dst_path = os.path.join(new_grp_path, fname)
+                    shutil.move(src_path, dst_path)
+
+            self.logger.info(f"Group '{name}' updated, {len(node_to_initialize)} node(s) affected")
         self._save()
-        return grp
+        return result_obj
 
     def rename_grp(self, name_from, name_to):
         self._check_open()
@@ -294,8 +294,6 @@ class Experimenter():
         """
         self._check_open()
         self.pipeline.remove_node(name)
-        # nodes 딕셔너리에서 제거
-        del self.nodes[name]
         for v in self.metric.values():
             v.reset_nodes([name])
         
@@ -346,10 +344,10 @@ class Experimenter():
     def close_exp(self):
         if self.status != "open":
             raise RuntimeError("")
-        for k, node in self.nodes.items():
-            if type(node) != RootNode and node.status == 'built':
+        for k, node_obj in self.node_objs.items():
+            if node_obj.status == 'built':
                 self.logger.info(f"Finalize '{k}'")
-                node.finalize()
+                node_obj.finalize()
         self.status = "closed"
     
     def reopen_exp(self):
@@ -362,12 +360,12 @@ class Experimenter():
         self.build()
 
     def set_node(
-        self, name, grp, processor = None, edges = None, X = None, y = None,
-        method = None, adapter = 'default', params = None, replace = False
+        self, name, grp, processor = None, edges = None,
+        method = None, adapter = None, params = None, replace = False
     ):
         self._check_open()
         result_obj = self.pipeline.set_node(
-            name, grp, processor, edges, X, y, method, adapter, params, replace
+            name, grp, processor, edges, method, adapter, params, replace
         )
 
         # 기존 노드를 업데이트한 경우, 하위 노드들도 재빌드
@@ -385,26 +383,27 @@ class Experimenter():
                     v.reset_nodes(affected_nodes)
         
         self._save()
-        return node
+        return result_obj
 
     def build(self, nodes = None, rebuild = False):
         self._check_open()
-        if nodes is None:
-            # 기존 동작: 모든 root group의 노드
-            node_names = list(self.nodes.keys())
-        elif isinstance(nodes, list):
-            node_names = [n for n in nodes if n in self.nodes]
-        elif isinstance(nodes, str):
-            pat = re.compile(nodes)
-            node_names = [k for k in self.nodes.keys() if k is not None and pat.search(k)]
-        else:
-            raise ValueError(f"nodes must be None, list, or str, got {type(nodes)}")
-        target_nodes = [
-            i for i in self._get_effected_nodes([None]) if type(i) != RootNode and i.grp.role == 'stage' and (i.name in node_names and (i.status is None or rebuild))
-        ]
+        node_names = self.pipeline.get_node_names(nodes)
+        target_nodes = list()
+        for i in self.pipeline._get_effected_nodes([None]):
+            node = self.pipeline.get_node(i)
+            grp = self.pipeline.get_grp(node.grp)
+            if grp.role == 'stage' and i not in self.node_objs:
+                target_nodes.append(i)
+
         self.logger.info(f"Building {len(target_nodes)} node(s)")
         for node in target_nodes:
-            node.start_build()
+            if node in self.node_objs:
+                node_obj = self.node_objs[node]
+            else:
+                node_obj = StageObj(self.get_node_path(node))
+                self.node_objs[node] = node_obj
+            node_obj.start_build()
+        
         n_splits = self.get_n_splits()
         self.logger.start_progress("Build", n_splits)
         try:
@@ -413,51 +412,56 @@ class Experimenter():
                 self.logger.start_progress("Node", len(target_nodes))
                 for ni, node in enumerate(target_nodes):
                     self.logger.update_progress(ni)
-                    self.logger._progress[-1][0] = node.name
+                    self.logger._progress[-1][0] = node
                     with warnings.catch_warnings(record=True) as caught:
                         warnings.simplefilter("always")
-                        node.build_idx(i)
+                        node_obj = self.node_objs[node]
+                        node_attrs = self.pipeline.get_node_attrs(node)
+                        result_iter = node_obj.build_idx(
+                            i, node_attrs, self.get_data(i, node_attrs['edges']), self.logger
+                        )
                         for w in caught:
-                            self.logger.warning(f"[{node.name}] fold {i}: {w.category.__name__}: {w.message}")
+                            self.logger.warning(f"[{node}] fold {i}: {w.category.__name__}: {w.message}")
                 self.logger.end_progress(len(target_nodes))
             self.logger.end_progress(n_splits)
         except Exception as e:
             self.logger.clear_progress()
-            self.logger.info(f"Build failed at fold {i}, node '{node.name}': {type(e).__name__}: {e}")
+            self.logger.info(f"Build failed at fold {i}, node '{node}': {type(e).__name__}: {e}")
             self.logger.info(traceback.format_exc())
             raise
         for node in target_nodes:
-            node.end_build()
+            node_obj = self.node_objs[node]
+            node_obj.end_build()
         self.logger.info(f"Build complete: {len(target_nodes)} node(s)")
     
     def exp(self, nodes = None):
         self._check_open()
-        if nodes is None:
-            # 기존 동작: 모든 root group의 노드
-            node_names = list(self.nodes.keys())
-        elif isinstance(nodes, list):
-            node_names = [n for n in nodes if n in self.nodes]
-        elif isinstance(nodes, str):
-            pat = re.compile(nodes)
-            node_names = [k for k in self.nodes.keys() if k is not None and pat.search(k)]
-        else:
-            raise ValueError(f"nodes must be None, list, or str, got {type(nodes)}")
-        target_nodes = [
-            i for i in self._get_effected_nodes([None]) if type(i) != RootNode and i.grp.role == 'head' and (i.name in node_names and i.status is None)
-        ]
+        node_names = self.pipeline.get_node_names(nodes)
+        target_nodes = list()
+        for i in self.pipeline._get_effected_nodes([None]):
+            node = self.pipeline.get_node(i)
+            grp = self.pipeline.get_grp(node.grp)
+            if grp.role == 'head' and i not in self.node_objs:
+                target_nodes.append(i)
+        
         self.logger.info(f"Experimenting {len(target_nodes)} node(s)")
 
         # start_experiment for all nodes
         for node in target_nodes:
-            node.start_experiment()
+            if node in self.node_objs:
+                node_obj = self.node_objs[node]
+            else:
+                node_obj = HeadObj(self.get_node_path(node))
+                self.node_objs[node] = node_obj
+            node_obj.start_exp()
 
         # _start for metrics and stackings
         for v in self.metric.values():
             for node in target_nodes:
-                v._start(node.name)
+                v._start(node)
         for v in self.stacking.values():
             for node in target_nodes:
-                v._start(node.name)
+                v._start(node)
 
         # experiment loop
         n_splits = self.get_n_splits()
@@ -473,10 +477,14 @@ class Experimenter():
                 self.logger.start_progress("Node", len(target_nodes))
                 for ni, node in enumerate(target_nodes):
                     self.logger.update_progress(ni)
-                    self.logger._progress[-1][0] = node.name
+                    self.logger._progress[-1][0] = node
                     with warnings.catch_warnings(record=True) as caught:
                         warnings.simplefilter("always")
-                        result_iter = node.experiment(i)
+                        node_obj = self.node_objs[node]
+                        node_attrs = self.pipeline.get_node_attrs(node)
+                        result_iter = node_obj.exp_idx(
+                            i, node_attrs, self.get_data(i, node_attrs['edges']), self.logger
+                        )
 
                         stacks = {k: list() for k in self.stacking.keys()}
                         sub_metrics = {k: list() for k in self.metric.keys()}
@@ -494,68 +502,65 @@ class Experimenter():
                                     stacks[k].append(_valid)
 
                         for w in caught:
-                            self.logger.warning(f"[{node.name}] fold {i}: {w.category.__name__}: {w.message}")
+                            self.logger.warning(f"[{node}] fold {i}: {w.category.__name__}: {w.message}")
 
                     # set metrics
                     for k, v in self.metric.items():
-                        v._set_metric(node.name, i, sub_metrics[k])
+                        v._set_metric(node, i, sub_metrics[k])
                     # aggregate and stack
                     for k, v in self.stacking.items():
                         if len(stacks[k]) > 0:
                             stk = v._aggregate(iter(stacks[k]))
-                            v._stack(node.name, i, stk)
+                            v._stack(node, i, stk)
                 self.logger.end_progress(len(target_nodes))
             self.logger.end_progress(n_splits)
         except Exception as e:
             self.logger.clear_progress()
-            self.logger.info(f"Exp failed at fold {i}, node '{node.name}': {type(e).__name__}: {e}")
+            self.logger.info(f"Exp failed at fold {i}, node '{node}': {type(e).__name__}: {e}")
             self.logger.info(traceback.format_exc())
             # _start for metrics and stackings
             for v in self.metric.values():
-                v.reset_node(target_nodes)
+                v.reset_nodes(target_nodes)
             for v in self.stacking.values():
-                v.reset_node(target_nodes)
+                v.reset_nodes(target_nodes)
             raise
 
         # end_experiment for all nodes
         for node in target_nodes:
-            node.end_experiment()
+            node_obj = self.node_objs[node]
+            node_obj.end_exp()
 
         # _end for metrics and stackings
         for v in self.metric.values():
             for node in target_nodes:
-                v._end(node.name)
+                v._end(node)
         for v in self.stacking.values():
             for node in target_nodes:
-                v._end(node.name)
+                v._end(node)
 
         self.logger.info(f"Experimentation complete: {len(target_nodes)} node(s)")
 
     def get_data(self, idx, edges):
         def ret_data_func(data_dict):
-            iters = {k: iter(v) for k, v in data_dict.items()}
-            while True:
-                result = {}
-                try:
-                    for k, it in iters.items():
-                        z = next(it)
-                        train_sub, valid_sub, outer_valid_sub = list(), list(), list()
-                        for (train_data, train_v_data), outer_valid_data in z:
-                            train_sub.append(train_data)
-                            if train_v_data is not None:
-                                valid_sub.append(train_v_data)
-                            outer_valid_sub.append(outer_valid_data)
+            result = {}
+            for _ in range(self.get_n_splits_inner()):
+                for k, it in data_dict.items():
+                    z = next(it)
+                    train_sub, valid_sub, outer_valid_sub = list(), list(), list()
+                    for (train_data, train_v_data), outer_valid_data in z:
+                        train_sub.append(train_data)
+                        if train_v_data is not None:
+                            valid_sub.append(train_v_data)
+                        outer_valid_sub.append(outer_valid_data)
 
-                        train_concat = type(train_sub[0]).concat(train_sub, axis=1)
-                        outer_concat = type(outer_valid_sub[0]).concat(outer_valid_sub, axis=1)
-                        if len(valid_sub) > 0:
-                            valid_concat = type(valid_sub[0]).concat(valid_sub, axis=1)
-                            result[k] = ((train_concat, valid_concat), outer_concat)
-                        else:
-                            result[k] = ((train_concat, None), outer_concat)
-                    yield result
-                except StopIteration:
-                    break
+                    train_concat = type(train_sub[0]).concat(train_sub, axis=1)
+                    outer_concat = type(outer_valid_sub[0]).concat(outer_valid_sub, axis=1)
+                    if len(valid_sub) > 0:
+                        valid_concat = type(valid_sub[0]).concat(valid_sub, axis=1)
+                        result[k] = ((train_concat, valid_concat), outer_concat)
+                    else:
+                        result[k] = ((train_concat, None), outer_concat)
+                yield result
 
         data_dict = {}
         for key, edge_list in edges.items():
@@ -567,32 +572,28 @@ class Experimenter():
     
     def get_data_train(self, idx, edges):
         def ret_data_func(data_dict):
-            iters = {k: iter(v) for k, v in data_dict.items()}
-            while True:
-                result = {}
-                try:
-                    for k, it in iters.items():
-                        z = next(it)
-                        train_sub, valid_sub = list(), list()
-                        for train_data, train_v_data in z:
-                            train_sub.append(train_data)
-                            if train_v_data is not None:
-                                valid_sub.append(train_v_data)
-                        train_concat = type(train_sub[0]).concat(train_sub, axis=1)
-                        if len(valid_sub) > 0:
-                            valid_concat = type(valid_sub[0]).concat(valid_sub, axis=1)
-                            result[k] = (train_concat, valid_concat)
-                        else:
-                            result[k] = (train_concat, None)
-                    yield result
-                except StopIteration:
-                    break
+            result = {}
+            for _ in range(self.get_n_splits_inner()):
+                for k, it in data_dict.items():
+                    z = next(it)
+                    train_sub, valid_sub = list(), list()
+                    for train_data, train_v_data in z:
+                        train_sub.append(train_data)
+                        if train_v_data is not None:
+                            valid_sub.append(train_v_data)
+                    train_concat = type(train_sub[0]).concat(train_sub, axis=1)
+                    if len(valid_sub) > 0:
+                        valid_concat = type(valid_sub[0]).concat(valid_sub, axis=1)
+                        result[k] = (train_concat, valid_concat)
+                    else:
+                        result[k] = (train_concat, None)
+                yield result
 
         data_dict = {}
         for key, edge_list in edges.items():
             key_data_list = []
             for node_name, var in edge_list:
-                key_data_list.append(self.get_node_output_train(idx, node_name, var))
+                key_data_list.append(self.get_node_train_output(idx, node_name, var))
             data_dict[key] = zip(*key_data_list)
         return ret_data_func(data_dict)
     
@@ -607,26 +608,22 @@ class Experimenter():
             dict: {key: valid_concat, ...} 각 key별로 concat된 외부 검증 데이터 결과
         """
         def ret_data_func(data_dict):
-            iters = {k: iter(v) for k, v in data_dict.items()}
-            while True:
-                result = {}
-                try:
-                    for k, it in iters.items():
-                        z = next(it)
-                        outer_valid_sub = list()
-                        for outer_valid_data in z:
-                            outer_valid_sub.append(outer_valid_data)
-                        outer_concat = type(outer_valid_sub[0]).concat(outer_valid_sub, axis=1)
-                        result[k] = outer_concat
-                    yield result
-                except StopIteration:
-                    break
+            result = {}
+            for _ in range(self.get_n_splits_inner()):
+                for k, it in data_dict.items():
+                    z = next(it)
+                    outer_valid_sub = list()
+                    for outer_valid_data in z:
+                        outer_valid_sub.append(outer_valid_data)
+                    outer_concat = type(outer_valid_sub[0]).concat(outer_valid_sub, axis=1)
+                    result[k] = outer_concat
+                yield result
 
         data_dict = {}
         for key, edge_list in edges.items():
             key_data_list = []
             for node_name, var in edge_list:
-                key_data_list.append(self.get_node_output_valid(idx, node_name, var))
+                key_data_list.append(self.get_node_valid_output(idx, node_name, var))
             data_dict[key] = zip(*key_data_list)
         return ret_data_func(data_dict)
 
@@ -654,13 +651,12 @@ class Experimenter():
                     yield (train_data, train_v_data), outer_valid_data
 
             return ret_func()
-        if self.status != 'built':
-            raise  RuntimeError("")
         it = self.cache.get_data(node, "all", idx, v)
         if it is not None:
             return it
-        it = self.get_data(idx, self.node.edges)
-        sub = self.nodes[node].get_objs()
+        node_attrs = self.pipeline.get_node_attrs(node)
+        it = self.get_data(idx, node_attrs['edges'])
+        sub = self.node_objs[node].get_objs(idx)
         if True:
             cache_data = list()
         else:
@@ -668,7 +664,7 @@ class Experimenter():
         def ret_func():
             for data_dict, (obj, train_, info) in zip(it, sub):
                 # X key로 입력 데이터 가져오기
-                (train_X, train_v_X), valid_X = data_dict[self.node.X]
+                (train_X, train_v_X), valid_X = data_dict['X']
 
                 # train data 처리
                 if train_ is None:
@@ -717,18 +713,12 @@ class Experimenter():
 
                     yield train_data, train_v_data
             return ret_func()
-        if self.status != 'built':
-            raise  RuntimeError("")
-        it = self.cache.get_data(self. node, "train", idx, v)
+        it = self.cache.get_data(node, "train", idx, v)
         if it is not None:
             return it
-        
-        it = self.get_data_train(idx, self.node.edges)
-        sub = self.nodes[node].get_objs()
-        if True:
-            cache_data = list()
-        else:
-            cache_data = None
+        node_attrs = self.pipeline.get_node_attrs(node)
+        it = self.get_data_valid(idx, node_attrs['edges'])
+        sub = self.node_objs[node].get_objs(idx)
         def ret_func():
             for data_dict, (obj, train_, info) in zip(it, sub):
                 # X key로 입력 데이터 가져오기
@@ -761,17 +751,16 @@ class Experimenter():
                 outer_valid_data = outer_valid_data.select_columns(v)
 
             def ret_func():
-                for _ in self.get_n_splits():
+                for _ in range(self.get_n_splits_inner()):
                     yield outer_valid_data
 
             return ret_func()
-        if self.status != 'built':
-            raise  RuntimeError("")
-        it = self.cache.get_data(self. node, "valid", idx, v)
+        it = self.cache.get_data(node, "valid", idx, v)
         if it is not None:
             return it
-        it = self.get_data_valid(idx, self.node.edges)
-        sub = self.nodes[node].get_objs()
+        node_attrs = self.pipeline.get_node_attrs(node)
+        it = self.get_data_valid(idx, node_attrs['edges'])
+        sub = self.node_objs[node].get_objs(idx)
         if True:
             cache_data = list()
         else:
@@ -779,7 +768,7 @@ class Experimenter():
         def ret_func():
             for data_dict, (obj, train_, info) in zip(it, sub):
                 # X key로 valid 데이터 가져오기
-                valid_X = data_dict[self.node.X]
+                valid_X = data_dict['X']
                 # valid data 처리 (외부 fold의 valid)
                 valid_result = obj.process(valid_X)
 
@@ -788,8 +777,8 @@ class Experimenter():
                     X = resolve_columns(valid_result, v, processor=obj)
                     valid_result = valid_result.select_columns(X)
                 yld = valid_result
-                if self.cache_v is not None:
-                    self.cache_v.append(yld)
+                if cache_data is not None:
+                    cache_data.append(yld)
                 yield yld
 
         if True:
@@ -900,8 +889,6 @@ class Experimenter():
         return result
 
     def get_edges_var(self, edges):
-        from ._node_processor import resolve_columns
-
         class _ColHolder:
             def __init__(self, columns):
                 self._columns = columns
@@ -920,19 +907,20 @@ class Experimenter():
                     if node_name is None:
                         edge_objs[key].append((None, var, None))
                     else:
-                        node = self.nodes[node_name]
-                        edge_objs[key].append((node_name, var, node.get_objs(idx)))
+                        node_obj = self.node_objs[node_name]
+                        edge_objs[key].append((node_name, var, node_obj.get_objs(idx)))
 
             for inner_idx in range(n_inner):
                 collected = {}
                 for key, objs_list in edge_objs.items():
                     collected[key] = []
                     for node_name, var, objs in objs_list:
+                        obj = next(objs)
                         if node_name is None:
-                            cols = self.root.get_columns()
+                            cols = self.data.get_columns()
                             proc = None
                         else:
-                            proc = objs[inner_idx][0]
+                            proc = obj[0]
                             cols = list(proc.output_vars) if proc.output_vars is not None else []
 
                         if var is not None:
@@ -963,14 +951,12 @@ class Experimenter():
             list: 로딩 순서에 맞는 (grp_name, parent_grp_name) 튜플 리스트
         """
         result = []
-        # 최상위 그룹 찾기 (parent_grp가 None인 그룹)
-        queue = [(grp.name, None) for grp in self.grps.values() if grp.parent_grp is None]
+        queue = [(grp.name, None) for grp in self.grps.values() if grp.parent is None]
 
         while queue:
             grp_name, parent_name = queue.pop(0)
             result.append((grp_name, parent_name))
             grp = self.grps[grp_name]
-            # 자식 그룹을 큐에 추가
             for child_grp in grp.child_grps:
                 queue.append((child_grp.name, grp_name))
 
@@ -982,11 +968,10 @@ class Experimenter():
         Returns:
             list: 로딩 순서에 맞는 (node_name, grp_name) 튜플 리스트
         """
-        effected = self._get_effected_nodes([None])
+        effected = self.pipeline._get_effected_nodes([None])
         result = []
         for node in effected:
-            if type(node) != RootNode:
-                result.append((node.name, node.grp.name))
+            result.append((node.name, node.grp.name))
         return result
 
     def _save(self, filepath=None):
@@ -995,6 +980,7 @@ class Experimenter():
         Args:
             filepath: 저장할 파일 경로 (None이면 self.path / '__exp.pkl')
         """
+        return
         if filepath is None:
             filepath = self.path / '__exp.pkl'
 
@@ -1067,9 +1053,9 @@ class Experimenter():
         exp.exp_id = save_data['exp_id']
 
         # NodeGroup 복원 (로딩 순서대로)
-        for grp_name, parent_grp_name in save_data['grp_load_order']:
-            parent_grp = exp.grps.get(parent_grp_name) if parent_grp_name else None
-            grp = exp.load_grp(grp_name, parent_grp)
+        for grp_name, parent_name in save_data['grp_load_order']:
+            parent = exp.grps.get(parent_name) if parent_name else None
+            grp = exp.load_grp(grp_name, parent)
             exp.grps[grp_name] = grp
 
         # Node 복원 (로딩 순서대로)
@@ -1104,7 +1090,14 @@ class Experimenter():
         return exp
 
     def get_result(self, node, idx, result, params = {}):
-        return self.nodes[node].get_result(idx, result, params)
+        node_attrs = self.pipeline.get_node_attrs(node)
+        adapter = node_attrs['adapter']
+        if result not in adapter.result_objs:
+            raise ValueError(f"{result} Unsupported result")
+        result_func = adapter.result_objs[result][0]
+
+        for i in self.node_objs[node].get_objs(idx):
+            yield result_func(i[0], **params)
 
     def get_results(self, node, result, params = {}):
         for i in range(self.get_n_splits()):
@@ -1115,7 +1108,9 @@ class Experimenter():
     def get_results_agg(self, node, result, params = {}, agg_inner = True, agg_outer = True):
         if agg_outer and not agg_inner:
             raise ValueError("agg_outer requires agg_inner to be True")
-        if not self.nodes[node].adapter_.result_objs[result][1]:
+        node_attrs = self.pipeline.get_node_attrs(node)
+        adapter = node_attrs['adapter']
+        if not adapter.result_objs[result][1]:
             raise ValueError(f"Result '{result}' is not mergeable across folds")
         l = list()
         for no, i in enumerate(self.get_results(node, result, params)):
@@ -1176,10 +1171,10 @@ def create_like(exp, data, path, data_names=None, sp=None, sp_v=None, splitter_p
     # 1. 최상위 그룹부터 BFS로 복제
     grp_mapping = {}  # 원본 그룹명 -> 새 그룹 객체
 
-    # 최상위 그룹 찾기 (parent_grp가 None인 그룹)
-    top_level_grps = [grp for grp in exp.grps.values() if grp.parent_grp is None]
+    # 최상위 그룹 찾기 (parent가 None인 그룹)
+    top_level_grps = [grp for grp in exp.grps.values() if grp.parent is None]
 
-    def clone_group_recursive(orig_grp, parent_grp_name=None):
+    def clone_group_recursive(orig_grp, parent_name=None):
         """그룹을 재귀적으로 복제"""
         # edges dict 복사
         edges_copy = {k: list(v) for k, v in orig_grp.edges.items()}
@@ -1191,7 +1186,7 @@ def create_like(exp, data, path, data_names=None, sp=None, sp_v=None, splitter_p
             X=orig_grp.X,
             y=orig_grp.y,
             method=orig_grp.method,
-            parent_grp=parent_grp_name,
+            parent=parent_name,
             adapter=orig_grp.adapter,
             params=orig_grp.params.copy() if orig_grp.params else {}
         )
@@ -1199,7 +1194,7 @@ def create_like(exp, data, path, data_names=None, sp=None, sp_v=None, splitter_p
 
         # 자식 그룹들도 복제
         for child_grp in orig_grp.child_grps:
-            clone_group_recursive(child_grp, parent_grp_name=orig_grp.name)
+            clone_group_recursive(child_grp, parent_name=orig_grp.name)
 
     # 최상위 그룹부터 재귀적으로 복제
     for grp in top_level_grps:
@@ -1243,8 +1238,6 @@ def create_like(exp, data, path, data_names=None, sp=None, sp_v=None, splitter_p
                 grp=orig_node.grp.name,
                 processor=org['processor'],
                 edges=edges_copy,
-                X=org['X'],
-                y=org['y'],
                 method=org['method'],
                 adapter=org['adapter'],
                 params=org['params'].copy() if org['params'] else {}

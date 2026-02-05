@@ -81,34 +81,34 @@ def resolve_columns(data, X, y=None, processor=None):
         return ret
 
 class TransformProcessor():
-    def __init__(self, node, transformer, adapter = None, params = {}):
-        self.node = node
+    def __init__(self, name, transformer, adapter = None, params = {}, logger = None):
+        self.name = name
         self.transformer = transformer
         self.params = params
         self.adapter = adapter
         self.output_vars = None
+        self.logger = logger
 
-    def fit(self, data_dict, X, y):
+    def fit(self, data_dict):
         # X key로 데이터 가져오기
-        (train_X, train_v_X), valid_X = data_dict[X]
+        (train_X, train_v_X), valid_X = data_dict['X']
         self.X_ = train_X.get_columns()
 
         # y key로 데이터 가져오기 (있으면)
-        if y is not None and y in data_dict:
-            (train_y, train_v_y), valid_y = data_dict[y]
+        if 'y' in data_dict:
+            (train_y, train_v_y), valid_y = data_dict['y']
             self.y_columns = train_y.get_columns()
         else:
             train_y, train_v_y, valid_y = None, None, None
             self.y_columns = None
 
-        params = self.adapter.get_params(self.params, logger = self.node.experimenter.logger) if self.adapter is not None else self.params
+        params = self.adapter.get_params(self.params, logger = self.logger) if self.adapter is not None else self.params
         self.obj = self.transformer(**params)
 
         # adapter에서 fit_params 생성
         if self.adapter is not None:
             fit_params = self.adapter.get_fit_params(
-                data_dict=data_dict, X=X, y=y, params=self.params,
-                logger=self.node.experimenter.logger
+                data_dict=data_dict, X=self.X_, y=self.y_columns, params=self.params,logger=self.logger
             )
         else:
             fit_params = {}
@@ -125,7 +125,7 @@ class TransformProcessor():
         # 컬럼명 결정 (get_feature_names_out이 있으면 사용)
         if hasattr(self.obj, 'get_feature_names_out'):
             column_names = self.obj.get_feature_names_out().tolist()
-            column_names = [f"{self.node.name}__{col}" for col in column_names]
+            column_names = [f"{self.name}__{col}" for col in column_names]
         else:
             column_names = None
 
@@ -133,28 +133,27 @@ class TransformProcessor():
             self.output_vars = column_names
         return self
 
-    def fit_process(self, data_dict, X, y):
+    def fit_process(self, data_dict):
         # X key로 데이터 가져오기
-        (train_X, train_v_X), valid_X = data_dict[X]
+        (train_X, train_v_X), valid_X = data_dict['X']
         self.X_ = train_X.get_columns()
         train_index = train_X.get_index()
 
         # y key로 데이터 가져오기 (있으면)
-        if y is not None and y in data_dict:
-            (train_y, train_v_y), valid_y = data_dict[y]
+        if 'y' in data_dict:
+            (train_y, train_v_y), valid_y = data_dict['y']
             self.y_columns = train_y.get_columns()
         else:
             train_y, train_v_y, valid_y = None, None, None
             self.y_columns = None
 
-        params = self.adapter.get_params(self.params, logger = self.node.experimenter.logger) if self.adapter is not None else self.params
+        params = self.adapter.get_params(self.params, logger = self.logger) if self.adapter is not None else self.params
         self.obj = self.transformer(**params)
 
         # adapter에서 fit_params 생성
         if self.adapter is not None:
             fit_params = self.adapter.get_fit_params(
-                data_dict=data_dict, X=X, y=y, params=self.params,
-                logger=self.node.experimenter.logger
+                data_dict=data_dict, X=self.X_, y=self.y_columns, params=self.params, logger=self.logger
             )
         else:
             fit_params = {}
@@ -193,37 +192,37 @@ class TransformProcessor():
         return data_wrapper_class.from_output(result, self.output_vars, data_index)
 
 class PredictProcessor():
-    def __init__(self, node, estimator, method='predict', adapter = None, params = {}):
-        self.node = node
+    def __init__(self, name, estimator, method='predict', adapter = None, params = {}, logger = None):
+        self.name = name
         self.estimator = estimator
         self.params = params
         self.method = method
         self.output_vars = None
         self.adapter = adapter
         self.y_columns = None
+        self.logger = logger
 
-    def fit(self, data_dict, X, y):
+    def fit(self, data_dict):
         # X key로 데이터 가져오기
-        (train_X, train_v_X), valid_X = data_dict[X]
+        (train_X, train_v_X), valid_X = data_dict['X']
         self.X_ = train_X.get_columns()
 
         # y key로 데이터 가져오기 (있으면)
-        if y is not None and y in data_dict:
-            (train_y, train_v_y), valid_y = data_dict[y]
+        if 'y' in data_dict:
+            (train_y, train_v_y), valid_y = data_dict['y']
             self.y_columns = train_y.get_columns()
         else:
             train_y, train_v_y, valid_y = None, None, None
             self.y_columns = None
 
         # adapter가 있으면 params 조정 (callbacks 등 설정)
-        params = self.adapter.get_params(self.params, logger = self.node.experimenter.logger) if self.adapter is not None else self.params
+        params = self.adapter.get_params(self.params, logger = self.logger) if self.adapter is not None else self.params
         self.obj = self.estimator(**params)
 
         # adapter에서 fit_params 생성
         if self.adapter is not None:
             fit_params = self.adapter.get_fit_params(
-                data_dict=data_dict, X=X, y=y, params=self.params,
-                logger=self.node.experimenter.logger
+                data_dict=data_dict, X=self.X_, y=self.y_columns, params=self.params, logger=self.logger
             )
         else:
             fit_params = {}
@@ -246,7 +245,7 @@ class PredictProcessor():
             else:
                 y_name = '_'.join(self.y_columns)
 
-            col_name = f"{self.node.name}__{y_name}"
+            col_name = f"{self.name}__{y_name}"
             self.output_vars = [col_name]
         elif self.method == 'predict_proba':
             # y 변수명 결정
@@ -255,33 +254,33 @@ class PredictProcessor():
             else:
                 y_name = '_'.join(self.y_columns)
 
-            columns = [f"{self.node.name}__{y_name}_{i}" for i in self.obj.classes_]
+            columns = [f"{self.name}__{y_name}_{i}" for i in self.obj.classes_]
             self.output_vars = columns
         return self
 
-    def fit_process(self, data_dict, X, y):
+    def fit_process(self, data_dict):
         # X key로 데이터 가져오기
-        (train_X, train_v_X), valid_X = data_dict[X]
+        (train_X, train_v_X), valid_X = data_dict['X']
         self.X_ = train_X.get_columns()
         train_index = train_X.get_index()
 
         # y key로 데이터 가져오기 (있으면)
-        if y is not None and y in data_dict:
-            (train_y, train_v_y), valid_y = data_dict[y]
+        if 'y' in data_dict:
+            (train_y, train_v_y), valid_y = data_dict['y']
             self.y_columns = train_y.get_columns()
         else:
             train_y, train_v_y, valid_y = None, None, None
             self.y_columns = None
 
         # adapter가 있으면 params 조정 (callbacks 등 설정)
-        params = self.adapter.get_params(self.params, logger = self.node.experimenter.logger) if self.adapter is not None else self.params
+        params = self.adapter.get_params(self.params, logger = self.logger) if self.adapter is not None else self.params
         self.obj = self.estimator(**params)
 
         # adapter에서 fit_params 생성
         if self.adapter is not None:
             fit_params = self.adapter.get_fit_params(
-                data_dict=data_dict, X=X, y=y, params=self.params,
-                logger=self.node.experimenter.logger
+                data_dict=data_dict, X=self.X_, y=self.y_columns, params=self.params,
+                logger=self.logger
             )
         else:
             fit_params = {}
@@ -303,7 +302,7 @@ class PredictProcessor():
         else:
             y_name = '_'.join(self.y_columns)
 
-        col_name = f"{self.node.name}__{y_name}"
+        col_name = f"{self.name}__{y_name}"
         column_names = [col_name]
         self.output_vars = column_names
 
