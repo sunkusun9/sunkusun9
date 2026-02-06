@@ -6,89 +6,88 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
 
 # modeler 모듈 요약
 
+## 아키텍처 개요
+- **Pipeline** (`_pipeline.py`): 노드 그래프 자료구조 (ML 관심사 분리)
+- **Experimenter** (`_experimenter.py`): 실험 실행/관리 (Pipeline 사용)
+- **ExpObj** (`_expobj.py`): 노드별 빌드/실험 객체 관리
+
 ## 핵심 클래스
-- **Experimenter** (`_experimenter.py`): 실험 관리 중심 클래스
-  - 생성자: `(data, path, sp, sp_v, splitter_params, title, data_key, logger)`
-  - 상태 관리: `status` (open/close), `open()`, `close()`, `_check_open()`
-  - 구조 관리: `set_grp`, `set_node`, `rename_grp`, `remove_grp`, `remove_node`
-  - 실행: `build` (pipe 노드), `exp` (exp 노드), `finalize`, `reinitialize`
-  - 측정/스태킹: `add_metric`, `add_stacking`
-  - 결과 분석: `get_result`, `get_results`, `get_results_agg` (adapter의 result_objs 활용)
-  - 저장/로드: `_save`, `load`
-  - 설명: `get_node_info`, `desc_spec`, `desc_pipeline`, `desc_node`, `desc_node_vars`
-  - 저장: `{path}/__exp.pkl` (data 제외, data_key로 검증)
 
-- **NodeGroup** (`_node.py`): 노드 그룹 (pipe/exp 역할), 계층 구조 (parent_grp/child_grps)
-  - edges: `{key: [(node_name, var_spec), ...], ...}` dict 형태
-  - 상위 그룹 edges와 하위 그룹 edges는 같은 key면 extend로 병합
-  - 저장: `{grp_path}/__grp.pkl`
+### Pipeline 계층 (`_pipeline.py`)
+- **Pipeline**: 노드 그래프 관리
+  - `nodes`: `{name: PipelineNode}`, `grps`: `{name: PipelineGroup}`
+  - `set_grp`, `set_node`, `rename_grp`, `remove_grp`, `remove_node`
+  - `get_node_names(query)`, `get_node_attrs(name)`, `_get_effected_nodes(nodes)`
 
-- **Node** (`_node.py`): 개별 노드 (processor 실행 단위)
-  - edges: 그룹 계층의 edges와 노드 자체 edges를 병합 (같은 key면 extend)
-  - X, y: edges dict의 key를 지정하는 문자열 (예: 'X', 'y')
-  - 저장: `{grp_path}/__{name}.pkl`, 빌드 결과 `{node_path}/obj{idx}.pkl`
+- **PipelineGroup**: 노드 그룹 (stage/head 역할)
+  - 속성: `name`, `role`, `processor`, `edges`, `method`, `parent`, `adapter`, `params`
+  - `children`: 자식 그룹명 리스트, `nodes`: 소속 노드명 리스트
+  - `get_attrs(grps)`: 상위 그룹 속성 병합하여 반환
 
-- **RootNode** (`_node.py`): 원본 데이터 노드
+- **PipelineNode**: 개별 노드
+  - 속성: `name`, `grp`, `processor`, `edges`, `method`, `adapter`, `params`
+  - `output_edges`: 이 노드를 입력으로 사용하는 노드명 리스트
+  - `get_attrs(grps)`: 그룹 속성과 노드 속성 병합
 
-- **Metric** (`_metric.py`): 실험 결과 측정
-  - target_vars: `[(node_name, var), ...]` 형태
-  - 저장: `{path}/__metric/{name}.pkl`
+### Experimenter (`_experimenter.py`)
+- 생성자: `(data, path, ..., cache_maxsize=4GB, logger)`
+- `pipeline`: Pipeline 인스턴스
+- `node_objs`: `{node_name: StageObj|HeadObj}`
+- `cache`: DataCache (LRU, 용량 기반)
+- 실행: `build(nodes)` (stage), `exp(nodes)` (head)
+- 상태관리: `_reset_nodes(nodes)` - node_objs, cache, metric, stacking 초기화
+- 저장/로드: `_save()`, `load(filepath, data, data_key)`
+  - pipeline 객체 직접 저장, node_obj_keys로 복원
 
-- **Stacking** (`_stacking.py`): 실험 결과 스태킹 (메모리 효율적)
-  - target_vars: `[(node_name, var), ...]` 형태
-  - 저장: `{path}/__stacking/{name}/__config.pkl`, 노드별 `{node}.pkl`
+### DataCache (`_experimenter.py`)
+- `cachetools.LRUCache` 기반, 용량(bytes) 단위 관리
+- `get_data(node, typ, idx)`, `put_data(node, typ, idx, data)`
+- `clear_nodes(nodes)`: 특정 노드들의 캐시 삭제
+
+### ExpObj (`_expobj.py`)
+- **StageObj**: stage 역할 노드의 빌드 객체
+  - `load()`: 파일에서 objs_ 복원, 없으면 status='finalized'
+  - `start_build()`, `build_idx()`, `end_build()`, `get_objs(idx)`, `finalize()`
+
+- **HeadObj**: head 역할 노드의 실험 객체
+  - `load()`: 파일 존재 여부로 status 복원
+  - `start_exp()`, `exp_idx()`, `end_exp()`, `get_objs(idx)`, `finalize()`
+
+### 측정/스태킹
+- **Metric** (`_metric.py`): `target_vars`, `output_var`, `metric_func`
+- **Stacking** (`_stacking.py`): `target_vars`, `output_var`, `method`
 
 ## edges 구조
 - dict 형태: `{key: [(node_name, var_spec), ...], ...}`
 - key: 변수 집합 이름 (예: 'X', 'y', 'sample_weight')
-- value: `(node_name, var_spec)` 튜플 리스트
-  - node_name: 소스 노드 이름 (None이면 Root)
-  - var_spec: resolve_columns에 전달할 변수 지정 (None, str, list, tuple, slice 등)
-- 같은 key의 데이터는 가로(column) 방향으로 concat
+- 같은 key의 데이터는 column 방향으로 concat
+- 상위→하위 병합: 같은 key면 extend
 
-## Processor 인터페이스
-- `fit(data_dict, X, y)`, `fit_process(data_dict, X, y)`, `process(data)`
-- data_dict: `{key: ((train, train_v), valid), ...}` 형태
-- X, y: edges dict의 key 문자열
+## Processor (`_node_processor.py`)
+- **TransformProcessor**: `fit`, `fit_process`, `process`
+- **PredictProcessor**: `fit`, `fit_process`, `process`
+- `data_dict`: `{key: ((train, train_v), valid), ...}` 형태
 
 ## Adapter 인터페이스
-- `get_params(params, logger)`: 모델 생성 파라미터 반환
-- `get_fit_params(data_dict, X, y, params, logger)`: fit 파라미터 반환 (eval_set 등)
-- `result_objs`: `{name: (callable, mergeable_bool)}` 결과 분석용
-
-## Logger (`_logger.py`)
-- **BaseLogger** (ABC): `info`, `warning`, `start_progress`, `update_progress`, `end_progress`, `adhoc_progress`, `clear_progress`
-- **DefaultLogger**: 콘솔 출력 구현
-  - progress: 스택 기반 다중 depth (`Build 1/3 > node_a 2/5 > 150/500 valid-rmse: 0.12`)
-  - adhoc_progress: depth 추가 없이 현재 스택에 이어 붙임
-  - level 설정: `['info', 'warning', 'progress']` 조합
-
-## 결과 분석 체계
-- adapter별 result_objs:
-  - sklearn: `coef`, `explained_variance`, `components`, `scalings`, `feature_importances`, `tree` 등
-  - xgboost: `feature_importances`, `evals_result`, `trees`
-  - lightgbm: `feature_importances_pvc`, `evals_result`, `trees`
-  - catboost: `feature_importances_pvc`, `feature_importances_interaction`, `evals_result`, `trees`
+- `get_params(params, logger)`: 모델 생성 파라미터
+- `get_fit_params(data_dict, X, y, params, logger)`: fit 파라미터
+- `result_objs`: `{name: (callable, mergeable_bool)}`
 
 ## 보조 모듈
-- **_data_wrapper.py**: DataWrapper (pandas/numpy 래핑, wrap/unwrap)
-- **_node_processor.py**: TransformProcessor, PredictProcessor, resolve_columns
-- **_describer.py**: desc_spec, desc_pipeline, desc_node, desc_node_vars
-- **_inferencer.py**, **_trainer.py**: 추론/학습 유틸리티
+- **_data_wrapper.py**: DataWrapper (wrap/unwrap)
+- **_describer.py**: desc_spec, desc_pipeline, desc_node, desc_obj_vars
+- **_logger.py**: BaseLogger, DefaultLogger
 - **col.py**: 컬럼 선택 유틸리티
-- **adapter/**: ML 프레임워크 어댑터 (sklearn, xgboost, lightgbm, catboost, keras, default)
-- **`create_like`** (모듈 함수): 기존 Experimenter 구조 복제하여 새 데이터로 생성
+- **adapter/**: sklearn, xgboost, lightgbm, catboost, keras
 
 ## 저장 구조
 ```
 {experimenter.path}/
-  __exp.pkl                    # Experimenter 메타
+  __exp.pkl                    # pipeline, node_obj_keys, 메타정보
   __metric/{name}.pkl          # Metric
   __stacking/{name}/
     __config.pkl               # Stacking 설정
     {node}.pkl                 # 노드별 스태킹 데이터
-  {grp_name}/
-    __grp.pkl                  # NodeGroup
-    __{node_name}.pkl          # Node 정보
-    {node_name}/obj{idx}.pkl   # 빌드 결과
+  {grp_path}/{node_name}/
+    obj{idx}_{no}.pkl          # 빌드 결과 (StageObj/HeadObj)
 ```

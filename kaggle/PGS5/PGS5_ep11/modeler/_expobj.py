@@ -74,6 +74,35 @@ class StageObj():
         self.path = path
         self.status = None
 
+    def load(self):
+        if not os.path.isdir(self.path):
+            self.status = 'finalized'
+            self.objs_ = None
+            return
+
+        self.objs_ = []
+        idx = 0
+        while True:
+            objs = []
+            no = 0
+            while True:
+                filename = self.path / ('obj' + str(idx) + '_' + str(no) + '.pkl')
+                if not os.path.isfile(filename):
+                    break
+                with open(filename, 'rb') as f:
+                    objs.append(pkl.load(f))
+                no += 1
+            if len(objs) == 0:
+                break
+            self.objs_.append(objs)
+            idx += 1
+
+        if len(self.objs_) == 0:
+            self.status = 'finalized'
+            self.objs_ = None
+        else:
+            self.status = 'built'
+
     def start_build(self):
         self.objs_ = list()
         if not os.path.isdir(self.path):
@@ -109,6 +138,23 @@ class HeadObj():
         self.path = path
         self.status = None
 
+    def load(self):
+        if not os.path.isdir(self.path):
+            self.status = 'finalized'
+            return
+
+        idx = 0
+        while True:
+            filename = self.path / ('obj' + str(idx) + '_0.pkl')
+            if not os.path.isfile(filename):
+                break
+            idx += 1
+
+        if idx == 0:
+            self.status = 'finalized'
+        else:
+            self.status = 'built'
+
     def start_exp(self, finalize = False):
         self.finalize_after_exp = finalize
         if not os.path.isdir(self.path):
@@ -138,8 +184,9 @@ class HeadObj():
                     sub_result['output_train'] = (train_result, train_v_result)
                     sub_result['output_valid'] = obj.process(valid_X)
                     yield sub_result
+                no += 1
         elif self.status == "finalized":
-            raise RuntimeError(f"Node '{node.name}' is finalized and cannot be re-experimented")
+            raise RuntimeError(f"Node is finalized and cannot be re-experimented")
         else:
             no = 0
             if include_output:

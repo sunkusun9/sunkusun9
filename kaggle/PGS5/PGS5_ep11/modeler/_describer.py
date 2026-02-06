@@ -1,3 +1,5 @@
+import pandas as pd
+
 def desc_spec(exp):
     """실험 스펙을 Markdown으로 반환"""
     lines = []
@@ -65,9 +67,10 @@ def desc_pipeline(pipeline, max_depth=None, direction='TD'):
         direction: 그래프 방향 ('TD': Top-Down, 'LR': Left-Right)
     """
     # 노드 개수 계산 함수
-    def count_nodes_in_group(pipeline):
+    def count_nodes_in_group(grp):
         count = len(grp.nodes)
-        for child_grp in grp.children:
+        for child_grp_name in grp.children:
+            child_grp = pipeline.grps[child_grp_name]
             count += count_nodes_in_group(child_grp)
         return count
 
@@ -85,9 +88,10 @@ def desc_pipeline(pipeline, max_depth=None, direction='TD'):
         node_priorities[current_node] = priority
 
         # current_node를 edge로 가지는 child 노드들 찾기
-        for name, node in pipeline.nodes.items():
+        for name in pipeline.nodes.keys():
             if name is not None:
-                for key, edge_list in node.edges.items():
+                node_attrs = pipeline.get_node_attrs(name)
+                for key, edge_list in node_attrs['edges'].items():
                     for edge_name, _ in edge_list:
                         if (current_node == 'Root' and edge_name is None) or (edge_name == current_node):
                             # child 노드 발견
@@ -152,7 +156,8 @@ def desc_pipeline(pipeline, max_depth=None, direction='TD'):
             result.append(f"{indent_str}    style grp_{grp.name}_count fill:#f5f5f5,stroke:#9e9e9e,stroke-dasharray: 5 5")
         else:
             items = []
-            for child_grp in grp.children:
+            for child_grp_name in grp.children:
+                child_grp = pipeline.grps[child_grp_name]
                 items.append(('group', child_grp))
             for node_name in grp.nodes:
                 if node_name in pipeline.nodes:
@@ -199,7 +204,8 @@ def desc_pipeline(pipeline, max_depth=None, direction='TD'):
                 nodes = []
                 for node_name in grp.nodes:
                     nodes.append(node_name)
-                for child_grp in grp.children:
+                for child_grp_name in grp.children:
+                    child_grp = pipeline.grps[child_grp_name]
                     nodes.extend(collect_nodes_in_group(child_grp))
                 return nodes
 
@@ -222,7 +228,8 @@ def desc_pipeline(pipeline, max_depth=None, direction='TD'):
                 nodes = []
                 for node_name in grp.nodes:
                     nodes.append(node_name)
-                for child_grp in grp.children:
+                for child_grp_name in grp.children:
+                    child_grp = pipeline.grps[child_grp_name]
                     nodes.extend(collect_nodes_in_group(child_grp))
                 return nodes
             nodes = collect_nodes_in_group(grp)
@@ -232,8 +239,8 @@ def desc_pipeline(pipeline, max_depth=None, direction='TD'):
         # 각 노드의 edges 확인
         for node_name in nodes:
             if node_name in pipeline.nodes:
-                node = pipeline.nodes[node_name]
-                for key, edge_list in node.edges.items():
+                node_attrs = pipeline.get_node_attrs(node_name)
+                for key, edge_list in node_attrs['edges'].items():
                     for edge_name, edge_var in edge_list:
                         if edge_name is None:
                             # Root 연결
@@ -305,10 +312,12 @@ def desc_node(pipeline, node_name, direction='TD', show_params=False):
                 continue
 
             # current를 edge로 가지는 노드들 찾기
-            for name, node in pipeline.nodes.items():
+            for name in pipeline.nodes.keys():
                 if name is not None and name not in visited:
                     found = False
-                    for key, edge_list in node.edges.items():
+                    node_attrs = pipeline.get_node_attrs(name)
+                    edges = node_attrs['edges']
+                    for key, edge_list in edges.items():
                         if found:
                             break
                         for edge_name, _ in edge_list:
@@ -318,7 +327,6 @@ def desc_node(pipeline, node_name, direction='TD', show_params=False):
                                 queue.append((new_path, new_visited))
                                 found = True
                                 break
-
         return paths
 
     paths = find_paths_to_node(node_name)
@@ -345,8 +353,8 @@ def desc_node(pipeline, node_name, direction='TD', show_params=False):
 
     # 노드의 grp 경로를 구하는 헬퍼
     def get_grp_path(node_name):
-        if node is None:
-            return node
+        if node_name is None:
+            return node_name
         parts = []
         node_obj = pipeline.get_node(node_name)
         if node_obj is None:
@@ -355,33 +363,34 @@ def desc_node(pipeline, node_name, direction='TD', show_params=False):
         while grp_obj is not None:
             parts.insert(0, grp_obj.name)
             grp_obj = pipeline.get_grp(grp_obj.parent)
-        parts.append(node.name)
+        parts.append(node_name)
         return '/'.join(parts)
 
     # 각 노드를 subgraph로 생성
     for name in sorted(all_nodes):
         if name in pipeline.nodes:
-            node = pipeline.nodes[name]
-
+            node_attrs = pipeline.get_node_attrs(name)
+            edges = node_attrs['edges']
             display_name = get_grp_path(name)
             lines.append(f"    subgraph node_{name}[\"{display_name}\"]")
 
             if show_params:
                 # 파라미터 정보 포맷팅
-                processor_name = node.processor.__name__ if node.processor else 'None'
+                processor_name = node_attrs['processor'].__name__ if node_attrs['processor'] else 'None'
+                method = node_attrs['method']
 
                 info_parts = ["<table>"]
                 info_parts.append(f"<tr><td align='left'><b>processor</b></td><td align='left'>{processor_name}</td></tr>")
-                info_parts.append(f"<tr><td align='left'><b>method</b></td><td align='left'>{node.method}</td></tr>")
+                info_parts.append(f"<tr><td align='left'><b>method</b></td><td align='left'>{method}</td></tr>")
 
                 # params 정보
-                if node.params:
-                    for key, value in node.params.items():
+                if node_attrs['params']:
+                    for key, value in node_attrs['params'].items():
                         value_str = str(value)
                         if len(value_str) > 40:
                             value_str = value_str[:37] + '...'
                         info_parts.append(f"<tr><td align='left'><b>{key}</b></td><td align='left'>{value_str}</td></tr>")
-                    info_parts.append("</table>")
+                info_parts.append("</table>")
                 params_content = "".join(info_parts)
                 lines.append(f"        {name}_info[\"{params_content}\"]")
             else:
@@ -403,8 +412,9 @@ def desc_node(pipeline, node_name, direction='TD', show_params=False):
     edges_dict = {}
     for name in all_nodes:
         if name in pipeline.nodes:
-            node = pipeline.nodes[name]
-            for key, edge_list in node.edges.items():
+            node_attrs = pipeline.get_node_attrs(name)
+            edges = node_attrs['edges']
+            for key, edge_list in edges.items():
                 for edge_name, _ in edge_list:
                     if edge_name is None:
                         source = "Root"
@@ -429,26 +439,25 @@ def desc_node(pipeline, node_name, direction='TD', show_params=False):
 
     lines.append("```")
     lines.append("")
-    target_display = get_grp_path(pipeline.nodes[node_name])
+    target_display = get_grp_path(node_name)
     lines.append(f"**Path from Root to '{target_display}' ({len(paths)} path(s) found)**")
 
     # Edge 정보 테이블 추가
-    target_node = pipeline.nodes[node_name]
+    node_attrs = pipeline.get_node_attrs(node_name)
+    edges = node_attrs['edges']
     lines.append("")
     lines.append("### Edges")
     lines.append("")
     lines.append("| Key | Node | Var |")
     lines.append("|-----|------|-----|")
-
-    for key in sorted(target_node.edges.keys()):
-        edge_list = target_node.edges[key]
+    for key in sorted(edges.keys()):
+        edge_list = edges[key]
         for edge_name, var_spec in edge_list:
             if edge_name is None:
-                node_display = "Root"
+                node_display = "Data Source"
             else:
-                edge_node = pipeline.nodes.get(edge_name)
-                if edge_node:
-                    node_display = get_grp_path(edge_node)
+                if edge_name:
+                    node_display = get_grp_path(edge_name)
                 else:
                     node_display = edge_name
             var_display = "*" if var_spec is None else f"`{var_spec}`"
@@ -456,29 +465,9 @@ def desc_node(pipeline, node_name, direction='TD', show_params=False):
 
     return "\n".join(lines)
 
-def desc_node_vars(exp, node_name, idx):
-    """특정 노드의 입력/출력 변수를 DataFrame으로 정리
-
-    Args:
-        exp: Experimenter 인스턴스
-        node_name: 대상 노드 이름
-        idx: 외부 fold 인덱스
-
-    Returns:
-        tuple: (입력변수 DataFrame, 출력변수 DataFrame)
-            - 입력변수 DataFrame: MultiIndex(처리노드명, 일련번호), 컬럼='name', 값=전체변수명
-            - 출력변수 DataFrame: Index=일련번호, 컬럼='name', 값=전체변수명
-    """
-    import pandas as pd
-
-    # get_node_vars 호출
-    result = exp.get_node_vars(node_name, idx)
-
-    if not result:
-        return pd.DataFrame(columns=['name']), pd.DataFrame(columns=['name'])
-
+def desc_obj_vars(exp, obj_vars):
     # 첫 번째 항목 사용 (가장 빈도 높은 것)
-    input_vars, output_vars, fold_indices = result[0]
+    input_vars, output_vars, fold_indices = obj_vars
 
     # 입력 변수 DataFrame 생성
     input_data = []

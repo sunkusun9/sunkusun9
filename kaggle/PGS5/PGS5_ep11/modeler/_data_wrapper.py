@@ -171,7 +171,6 @@ class DataWrapper(ABC):
     @staticmethod
     def mean(iterator):
         """평균값으로 집계"""
-        from ._data_wrapper import unwrap, wrap
         # DataWrapper에서 native 추출
         ret = unwrap(next(iterator)).copy()
         cnt = 1
@@ -378,7 +377,6 @@ class PolarsWrapper(DataWrapper):
     @staticmethod
     def mean(iterator):
         """평균값으로 집계"""
-        from ._data_wrapper import unwrap, wrap
         # DataWrapper에서 native 추출
         ret = unwrap(next(iterator)).clone()
         cnt = 1

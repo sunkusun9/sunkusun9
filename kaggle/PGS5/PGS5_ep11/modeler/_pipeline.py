@@ -65,7 +65,7 @@ class PipelineGroup:
 
     def copy(self):
         ret = PipelineGroup(
-            self.name, self.role, self.processor, self.edges.copy(), self.X, self.y,
+            self.name, self.role, self.processor, self.edges.copy(),
             self.method, self.parent, self.adapter, self.params.copy()
         )
         ret.children = self.children.copy()
@@ -124,9 +124,8 @@ class PipelineNode:
             'processor': processor,
             'adapter': adapter,
             'params': params,
+            'method': grp_attrs.get('method') if self.method is None else self.method,
         }
-        for i in ['processor', 'method']:
-            self.attrs[i] = grp_attrs.get(i) if getattr(self, i) is None else getattr(self, i)
 
         return self.attrs
 
@@ -139,6 +138,12 @@ class Pipeline:
         self.nodes = {}
         self.grps = {}
         self.nodes = {None: PipelineNode("Data_Source", None, None, None, None, None)}
+
+    def copy(self):
+        ret = Pipeline()
+        ret.grps = {k: v.copy() for k, v in self.grps.items()}
+        ret.nodes = {k: v.copy() for k, v in self.nodes.items()}
+        return ret
 
     def _validate_name(self, name):
         if name is None:
@@ -390,15 +395,14 @@ class Pipeline:
 
     def get_node_names(self, query):
         if query is None:
-            # 기존 동작: 모든 root group의 노드
             node_names = list(self.nodes.keys())
         elif isinstance(query, list):
-            node_names = [n for n in nodes if n in self.nodes]
+            node_names = [n for n in query if n in self.nodes]
         elif isinstance(query, str):
             pat = re.compile(query)
             node_names = [k for k in self.nodes.keys() if k is not None and pat.search(k)]
         else:
-            raise ValueError(f"nodes must be None, list, or str, got {type(nodes)}")
+            raise ValueError(f"query must be None, list, or str, got {type(query)}")
         return node_names
 
     def remove_node(self, name):
@@ -525,24 +529,7 @@ class Pipeline:
 
     def get_node_attrs(self, name):
         node = self.get_node(name)
-        return node.get_attrs(self.get_grp(node.grp))
-    
-    def get_parents(self, node_name):
-        if node_name not in self.nodes:
-            return []
-
-        node = self.nodes[node_name]
-        if node.grp_name is None:
-            return []
-
-        result = []
-        current_grp = self.grps.get(node.grp_name)
-
-        while current_grp is not None:
-            result.append(current_grp.name)
-            current_grp = current_grp.parent_grp
-
-        return result
+        return node.get_attrs(self.grps)
 
     def desc_pipeline(self, max_depth=None, direction='TD'):
         """파이프라인 구조를 Mermaid Markdown으로 반환

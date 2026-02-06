@@ -1,9 +1,8 @@
-from ._data_wrapper import unwrap
 import re
+from ._data_wrapper import unwrap
 
 def resolve_columns(data, X, y=None, processor=None):
     """X와 y를 실제 컬럼 리스트로 변환"""
-    import re
     columns = data.get_columns()
 
     # y 처리 (y가 있으면 X에서 제외할 컬럼)
@@ -172,7 +171,7 @@ class TransformProcessor():
         # 컬럼명 결정 (get_feature_names_out이 있으면 사용)
         if hasattr(self.obj, 'get_feature_names_out'):
             column_names = self.obj.get_feature_names_out().tolist()
-            column_names = [f"{self.node.name}__{col}" for col in column_names]
+            column_names = [f"{self.name}__{col}" for col in column_names]
         else:
             column_names = None
 

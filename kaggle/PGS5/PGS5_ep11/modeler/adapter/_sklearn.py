@@ -53,7 +53,7 @@ class PCAAdapter(ModelAdapter):
             obj.components_,
             index=output_vars,
             columns=input_vars
-        ).stack().raname('component')
+        ).stack().rename('component')
 
 PCAAdapter.result_objs = {
     'explained_variance': (PCAAdapter._get_explained_variance, True),
