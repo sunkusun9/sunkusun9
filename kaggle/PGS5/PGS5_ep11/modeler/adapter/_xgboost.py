@@ -110,7 +110,6 @@ class XGBoostAdapter(ModelAdapter):
             [pd.DataFrame(v).stack().rename(k) for k, v in evals_result.items()], axis=1
         ).stack()
 
-
     def _get_trees(processor):
         obj = processor.obj
         booster = obj.get_booster()

@@ -145,6 +145,81 @@ class Pipeline:
         ret.nodes = {k: v.copy() for k, v in self.nodes.items()}
         return ret
 
+    def copy_stage(self):
+        ret = Pipeline()
+
+        stage_grp_names = {name for name, grp in self.grps.items() if grp.role == 'stage'}
+
+        for name in stage_grp_names:
+            grp = self.grps[name].copy()
+            grp.children = [c for c in grp.children if c in stage_grp_names]
+            if grp.parent not in stage_grp_names:
+                grp.parent = None
+            ret.grps[name] = grp
+
+        stage_node_names = set()
+        for name, node in self.nodes.items():
+            if name is None:
+                continue
+            if node.grp in stage_grp_names:
+                stage_node_names.add(name)
+
+        for name in stage_node_names:
+            node = self.nodes[name].copy()
+            node.output_edges = [e for e in node.output_edges if e in stage_node_names]
+            ret.nodes[name] = node
+
+        data_source = self.nodes[None].copy()
+        data_source.output_edges = [e for e in data_source.output_edges if e in stage_node_names]
+        ret.nodes[None] = data_source
+
+        return ret
+
+    def copy_nodes(self, node_names):
+        needed_nodes = set()
+        queue = list(node_names)
+
+        while queue:
+            name = queue.pop(0)
+            if name is None or name in needed_nodes:
+                continue
+            if name not in self.nodes:
+                continue
+            needed_nodes.add(name)
+            attrs = self.nodes[name].get_attrs(self.grps)
+            for edge_list in attrs.get('edges', {}).values():
+                for edge_name, _ in edge_list:
+                    if edge_name is not None and edge_name not in needed_nodes:
+                        queue.append(edge_name)
+
+        needed_grps = set()
+        for name in needed_nodes:
+            grp_name = self.nodes[name].grp
+            while grp_name is not None and grp_name not in needed_grps:
+                needed_grps.add(grp_name)
+                grp_name = self.grps[grp_name].parent
+
+        ret = Pipeline()
+
+        for name in needed_grps:
+            grp = self.grps[name].copy()
+            grp.children = [c for c in grp.children if c in needed_grps]
+            grp.nodes = [n for n in grp.nodes if n in needed_nodes]
+            if grp.parent not in needed_grps:
+                grp.parent = None
+            ret.grps[name] = grp
+
+        for name in needed_nodes:
+            node = self.nodes[name].copy()
+            node.output_edges = [e for e in node.output_edges if e in needed_nodes]
+            ret.nodes[name] = node
+
+        data_source = self.nodes[None].copy()
+        data_source.output_edges = [e for e in data_source.output_edges if e in needed_nodes]
+        ret.nodes[None] = data_source
+
+        return ret
+
     def _validate_name(self, name):
         if name is None:
             return

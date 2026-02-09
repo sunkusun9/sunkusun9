@@ -16,12 +16,12 @@ from sklearn.model_selection import ShuffleSplit
 from ._data_wrapper import wrap, unwrap
 from ._expobj import HeadObj, StageObj
 from ._describer import desc_spec, desc_obj_vars
-from ._metric import Metric
-from ._stacking import Stacking
 from ._logger import DefaultLogger
 
 from ._pipeline import Pipeline
 from ._node_processor import resolve_columns
+from ._connector import Connector
+from .collector import Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector
 
 def _get_data_size(data):
     if data is None:
@@ -115,8 +115,7 @@ class Experimenter():
         self.node_objs = {}
         self.cache = DataCache(maxsize=cache_maxsize)
         self.grps = {}
-        self.metric = {}
-        self.stacking = {}
+        self.collectors = {}
         self.status = "open"
 
     def _check_open(self):
@@ -153,64 +152,13 @@ class Experimenter():
     def get_n_splits_inner(self):
         return len(self.train_idx_list[0])
 
-    def add_metric(self, name, target_vars, output_var, metric_func, include_train=False):
-        """Metric 인스턴스를 생성하여 추가
-
-        Args:
-            name: metric 이름
-            target_vars: 타겟 변수 리스트 [(node_name, var), ...]
-            output_var: 출력 변수
-            metric_func: metric 함수
-            include_train: train 결과 포함 여부 (기본값: False)
-
-        Returns:
-            Metric: 생성된 Metric 인스턴스
-        """
+    def add_collector(self, collector):
         self._check_open()
-        # __metric 폴더 생성 (최초 추가 시)
-        metric_dir = self.path / "__metric"
-        if not metric_dir.exists():
-            metric_dir.mkdir(parents=True, exist_ok=True)
-
-        metric = Metric(
-            name=name,
-            experimenter=self,
-            target_vars=target_vars,
-            output_var=output_var,
-            metric_func=metric_func,
-            include_train=include_train
-        )
-        self.metric[name] = metric
+        collector.path = self.path / '__collector' / collector.name
+        collector.save()
+        self.collectors[collector.name] = collector
         self._save()
-        return metric
-
-    def add_stacking(self, name, target_vars, output_var, method='mean', include_target=True):
-        """Stacking 인스턴스를 생성하여 추가
-
-        Args:
-            name: stacking 이름
-            target_vars: 타겟 변수 리스트 [(node_name, var), ...]
-            output_var: 출력 변수
-            method: 집계 방법 (기본값: 'mean')
-            include_target: 타겟 포함 여부 (기본값: True)
-
-        Returns:
-            Stacking: 생성된 Stacking 인스턴스
-        """
-        self._check_open()
-
-        stacking = Stacking(
-            experimenter=self,
-            target_vars=target_vars,
-            output_var=output_var,
-            method=method,
-            include_target=include_target
-        )
-        stacking.name = name
-        stacking.save_config()
-        self.stacking[name] = stacking
-        self._save()
-        return stacking
+        return collector
 
     def _validate_name(self, name):
         """Node 또는 NodeGroup 이름 검증
@@ -307,12 +255,9 @@ class Experimenter():
         """
         self._check_open()
         self.pipeline.remove_node(name)
-        for v in self.metric.values():
+        for v in self.collectors.values():
             v.reset_nodes([name])
-        
-        for v in self.stacking.values():
-            v.reset_nodes([name])
-        
+
         self.logger.info(f"Node '{name}' removed")
         self._save()
 
@@ -387,10 +332,7 @@ class Experimenter():
 
         self.cache.clear_nodes(nodes)
 
-        for v in self.metric.values():
-            v.reset_nodes(nodes)
-
-        for v in self.stacking.values():
+        for v in self.collectors.values():
             v.reset_nodes(nodes)
 
     def build(self, nodes = None, rebuild = False):
@@ -451,8 +393,17 @@ class Experimenter():
             grp = self.pipeline.get_grp(node.grp)
             if grp.role == 'head' and i not in self.node_objs and i in node_names:
                 target_nodes.append(i)
-        
+
         self.logger.info(f"Experimenting {len(target_nodes)} node(s)")
+
+        # connector matching
+        node_attrs_cache = {n: self.pipeline.get_node_attrs(n) for n in target_nodes}
+        matched = {}
+        for name, collector in self.collectors.items():
+            matched[name] = set(
+                n for n in target_nodes
+                if collector.connector.match(n, node_attrs_cache[n])
+            )
 
         # start_experiment for all nodes
         for node in target_nodes:
@@ -463,13 +414,11 @@ class Experimenter():
                 self.node_objs[node] = node_obj
             node_obj.start_exp()
 
-        # _start for metrics and stackings
-        for v in self.metric.values():
+        # collector _start
+        for name, collector in self.collectors.items():
             for node in target_nodes:
-                v._start(node)
-        for v in self.stacking.values():
-            for node in target_nodes:
-                v._start(node)
+                if node in matched[name]:
+                    collector._start(node)
 
         # experiment loop
         n_splits = self.get_n_splits()
@@ -477,10 +426,6 @@ class Experimenter():
         try:
             for i in range(n_splits):
                 self.logger.update_progress(i)
-                # prepare target metrics data
-                target_metrics = {
-                    k: v._get_data(i) for k, v in self.metric.items()
-                }
 
                 self.logger.start_progress("Node", len(target_nodes))
                 for ni, node in enumerate(target_nodes):
@@ -489,47 +434,39 @@ class Experimenter():
                     with warnings.catch_warnings(record=True) as caught:
                         warnings.simplefilter("always")
                         node_obj = self.node_objs[node]
-                        node_attrs = self.pipeline.get_node_attrs(node)
+                        node_attrs = node_attrs_cache[node]
                         result_iter = node_obj.exp_idx(
                             i, node_attrs, self.get_node_data(node, i), self.logger
                         )
 
-                        stacks = {k: list() for k in self.stacking.keys()}
-                        sub_metrics = {k: list() for k in self.metric.keys()}
-
-                        for n, result_data in enumerate(result_iter):
-                            # collect metrics
-                            for k, v in self.metric.items():
-                                sub_metric = v._get_metric(target_metrics[k][n], result_data)
-                                sub_metric = {k_sub: v_sub for k_sub, v_sub in sub_metric.items()}
-                                sub_metrics[k].append(sub_metric)
-                            # collect stacking data
-                            for k, v in self.stacking.items():
-                                _valid = v._get_valid(result_data)
-                                if _valid is not None:
-                                    stacks[k].append(_valid)
+                        for inner_idx, result_data in enumerate(result_iter):
+                            context = {
+                                'node_attrs': node_attrs,
+                                'processor': result_data['object'],
+                                'spec': result_data['spec'],
+                                'input': result_data['input'],
+                                'output_train': result_data['output_train'],
+                                'output_valid': result_data['output_valid'],
+                            }
+                            for name, collector in self.collectors.items():
+                                if node in matched[name]:
+                                    collector._collect(node, i, inner_idx, context)
 
                         for w in caught:
                             self.logger.warning(f"[{node}] fold {i}: {w.category.__name__}: {w.message}")
 
-                    # set metrics
-                    for k, v in self.metric.items():
-                        v._set_metric(node, i, sub_metrics[k])
-                    # aggregate and stack
-                    for k, v in self.stacking.items():
-                        if len(stacks[k]) > 0:
-                            stk = v._aggregate(iter(stacks[k]))
-                            v._stack(node, i, stk)
+                    # collector _end_idx
+                    for name, collector in self.collectors.items():
+                        if node in matched[name]:
+                            collector._end_idx(node, i)
+
                 self.logger.end_progress(len(target_nodes))
             self.logger.end_progress(n_splits)
         except Exception as e:
             self.logger.clear_progress()
             self.logger.info(f"Exp failed at fold {i}, node '{node}': {type(e).__name__}: {e}")
             self.logger.info(traceback.format_exc())
-            # _start for metrics and stackings
-            for v in self.metric.values():
-                v.reset_nodes(target_nodes)
-            for v in self.stacking.values():
+            for v in self.collectors.values():
                 v.reset_nodes(target_nodes)
             raise
 
@@ -538,15 +475,58 @@ class Experimenter():
             node_obj = self.node_objs[node]
             node_obj.end_exp()
 
-        # _end for metrics and stackings
-        for v in self.metric.values():
+        # collector _end
+        for name, collector in self.collectors.items():
             for node in target_nodes:
-                v._end(node)
-        for v in self.stacking.values():
-            for node in target_nodes:
-                v._end(node)
+                if node in matched[name]:
+                    collector._end(node)
 
         self.logger.info(f"Experimentation complete: {len(target_nodes)} node(s)")
+
+    def collect(self, collector):
+        # built head 노드 중 connector 매칭
+        target_nodes = []
+        node_attrs_cache = {}
+        for name in self.pipeline._get_effected_nodes([None]):
+            node = self.pipeline.get_node(name)
+            grp = self.pipeline.get_grp(node.grp)
+            if grp.role != 'head' or name not in self.node_objs:
+                continue
+            node_obj = self.node_objs[name]
+            if node_obj.status != 'built':
+                continue
+            node_attrs = self.pipeline.get_node_attrs(name)
+            if collector.connector.match(name, node_attrs) and not collector.has_node(name):
+                target_nodes.append(name)
+                node_attrs_cache[name] = node_attrs
+
+        for node in target_nodes:
+            collector._start(node)
+
+        n_splits = self.get_n_splits()
+        for idx in range(n_splits):
+            for node in target_nodes:
+                node_obj = self.node_objs[node]
+                node_attrs = node_attrs_cache[node]
+                result_iter = node_obj.exp_idx(
+                    idx, node_attrs, self.get_node_data(node, idx), self.logger
+                )
+                for inner_idx, result_data in enumerate(result_iter):
+                    context = {
+                        'node_attrs': node_attrs,
+                        'processor': result_data['object'],
+                        'spec': result_data['spec'],
+                        'input': result_data['input'],
+                        'output_train': result_data['output_train'],
+                        'output_valid': result_data['output_valid'],
+                    }
+                    collector._collect(node, idx, inner_idx, context)
+                collector._end_idx(node, idx)
+
+        for node in target_nodes:
+            collector._end(node)
+
+        return collector
 
     def get_data(self, idx, edges):
         data_dict = {}
@@ -935,8 +915,7 @@ class Experimenter():
             'exp_id': self.exp_id,
             'pipeline': self.pipeline,
             'node_obj_keys': list(self.node_objs.keys()),
-            'metric_keys': list(self.metric.keys()),
-            'stacking_keys': list(self.stacking.keys()),
+            'collector_keys': {name: type(c).__name__ for name, c in self.collectors.items()},
             'status': self.status
         }
 
@@ -945,8 +924,12 @@ class Experimenter():
 
     @staticmethod
     def load(filepath, data, data_key=None):
-        from ._metric import Metric
-        from ._stacking import Stacking
+        COLLECTOR_TYPES = {
+            'MetricCollector': MetricCollector,
+            'StackingCollector': StackingCollector,
+            'ModelAttrCollector': ModelAttrCollector,
+            'SHAPCollector': SHAPCollector,
+        }
 
         filepath = Path(filepath)
         with open(filepath / '__exp.pkl', 'rb') as f:
@@ -985,51 +968,19 @@ class Experimenter():
             node_obj.load()
             exp.node_objs[node_name] = node_obj
 
-        # Metric 복원
-        for metric_name in save_data['metric_keys']:
-            metric = Metric.load_from_file(exp, metric_name)
-            exp.metric[metric_name] = metric
-
-        # Stacking 복원
-        for stacking_name in save_data['stacking_keys']:
-            stacking = Stacking.load_from_file(exp, stacking_name)
-            exp.stacking[stacking_name] = stacking
+        # Collector 복원
+        collector_keys = save_data.get('collector_keys', {})
+        for coll_name, type_name in collector_keys.items():
+            cls = COLLECTOR_TYPES.get(type_name)
+            if cls is None:
+                continue
+            coll_path = filepath / '__collector' / coll_name
+            if (coll_path / '__config.pkl').exists():
+                collector = cls.load(coll_path)
+                exp.collectors[coll_name] = collector
 
         exp.logger.info(f"Loaded: {len(exp.pipeline.nodes) - 1} node(s), {len(exp.pipeline.grps)} group(s), {len(exp.train_idx_list)} fold(s)")
         return exp
-
-    def get_result(self, node, idx, result, params = {}):
-        node_attrs = self.pipeline.get_node_attrs(node)
-        adapter = node_attrs['adapter']
-        if result not in adapter.result_objs:
-            raise ValueError(f"{result} Unsupported result")
-        result_func = adapter.result_objs[result][0]
-
-        for i in self.node_objs[node].get_objs(idx):
-            yield result_func(i[0], **params)
-
-    def get_results(self, node, result, params = {}):
-        for i in range(self.get_n_splits()):
-            yield list(
-                self.get_result(node, i, result, params)
-            )
-
-    def get_results_agg(self, node, result, params = {}, agg_inner = True, agg_outer = True):
-        if agg_outer and not agg_inner:
-            raise ValueError("agg_outer requires agg_inner to be True")
-        node_attrs = self.pipeline.get_node_attrs(node)
-        adapter = node_attrs['adapter']
-        if not adapter.result_objs[result][1]:
-            raise ValueError(f"Result '{result}' is not mergeable across folds")
-        l = list()
-        for no, i in enumerate(self.get_results(node, result, params)):
-            l.append(pd.concat([j.rename(no_i) for no_i, j in enumerate(i)], axis = 1).stack().rename(no))
-        df = pd.concat(l, axis=1)
-        if agg_inner:
-            df = df.groupby(level=[i for i in range(len(df.index.levels) - 1)]).mean()
-            if agg_outer:
-                return df.mean(axis=1)
-        return df
     
     def export_pipeline(self):
         return self.pipeline.copy()

@@ -43,7 +43,7 @@ def _build_iter(node_attrs, data_dict_it, logger):
         raise ValueError(f"Unknown processor_type: {method}")
     
     for data_dict in data_dict_it:
-        yield _build_sub(node_attrs, data_dict, fit_process, logger)
+        yield _build_sub(node_attrs, data_dict, fit_process, logger), data_dict
 
 def _build_iter_output(node_attrs, data_dict_it, logger):
     method = node_attrs['method']
@@ -67,7 +67,7 @@ def _build_iter_output(node_attrs, data_dict_it, logger):
             train_v_result = None
         output_train = (train_result, train_v_result)
         output_valid = obj.process(valid_X)
-        yield obj, result, info, output_train, output_valid
+        yield obj, result, info, data_dict, output_train, output_valid
 
 class StageObj():
     def __init__(self, path):
@@ -112,7 +112,7 @@ class StageObj():
         if idx != len(self.objs_):
             raise RuntimeError(f"Build sequence is not valid")
         objs = list()
-        for no, obj in enumerate(_build_iter(node_attrs, data_dict_it,logger)):
+        for no, (obj, _) in enumerate(_build_iter(node_attrs, data_dict_it,logger)):
             filename = self.path / ('obj' + str(idx) + '_'  + str(no) + '.pkl')
             with open(filename, 'wb') as f:
                 pkl.dump(obj, f)
@@ -160,7 +160,7 @@ class HeadObj():
         if not os.path.isdir(self.path):
             os.makedirs(self.path, exist_ok = True)
 
-    def exp_idx(self, idx, node_attrs, data_dict_it, logger, include_output = True):
+    def exp_idx(self, idx, node_attrs, data_dict_it, logger, include_input = True, include_output = True):
         if self.status == "built":
             no = 0
             for data_dict in data_dict_it:
@@ -181,8 +181,11 @@ class HeadObj():
                         train_v_result = obj.process(train_v_X)
                     else:
                         train_v_result = None
-                    sub_result['output_train'] = (train_result, train_v_result)
-                    sub_result['output_valid'] = obj.process(valid_X)
+                    if include_output:
+                        sub_result['output_train'] = (train_result, train_v_result)
+                        sub_result['output_valid'] = obj.process(valid_X)
+                    if include_input:
+                        sub_result['input'] = data_dict
                     yield sub_result
                 no += 1
         elif self.status == "finalized":
@@ -191,10 +194,12 @@ class HeadObj():
             no = 0
             if include_output:
                 objs_iter = _build_iter_output(node_attrs, data_dict_it, logger)
-                for obj, train_, spec, output_train, output_valid in objs_iter:
+                for obj, train_, spec, data_dict, output_train, output_valid in objs_iter:
                     sub_result = {'spec': spec, 'object': obj}
                     sub_result['output_train'] = output_train
                     sub_result['output_valid'] = output_valid
+                    if include_input:
+                        sub_result['input'] = data_dict
                     yield sub_result
                     if self.status is None and (not self.finalize_after_exp):
                         filename = self.path / ('obj' + str(idx) + '_'  + str(no) + '.pkl')
@@ -203,8 +208,10 @@ class HeadObj():
                     no += 1
             else:
                 objs_iter = _build_iter(node_attrs, data_dict_it, logger)
-                for obj, train_, spec in objs_iter:
+                for obj, train_, spec, data_dict in objs_iter:
                     sub_result = {'spec': spec, 'object': obj}
+                    if include_input:
+                        sub_result['input'] = data_dict
                     yield sub_result
                     if self.status is None and (not self.finalize_after_exp):
                         filename = self.path / ('obj' + str(idx) + '_'  + str(no) + '.pkl')

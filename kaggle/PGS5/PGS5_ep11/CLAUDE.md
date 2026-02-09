@@ -18,6 +18,7 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
   - `nodes`: `{name: PipelineNode}`, `grps`: `{name: PipelineGroup}`
   - `set_grp`, `set_node`, `rename_grp`, `remove_grp`, `remove_node`
   - `get_node_names(query)`, `get_node_attrs(name)`, `_get_effected_nodes(nodes)`
+  - `copy()`, `copy_stage()`, `copy_nodes(node_names)` — 선택적 복사
 
 - **PipelineGroup**: 노드 그룹 (stage/head 역할)
   - 속성: `name`, `role`, `processor`, `edges`, `method`, `parent`, `adapter`, `params`
@@ -35,9 +36,11 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
 - `node_objs`: `{node_name: StageObj|HeadObj}`
 - `cache`: DataCache (LRU, 용량 기반)
 - 실행: `build(nodes)` (stage), `exp(nodes)` (head)
-- 상태관리: `_reset_nodes(nodes)` - node_objs, cache, metric, stacking 초기화
+- 상태관리: `_reset_nodes(nodes)` - node_objs, cache, collectors 초기화
+- `add_collector(collector)`: Collector 등록 (path 설정, save)
+- `collect(collector)`: ad-hoc 수집 (빌드 완료된 head 노드 대상, has_node으로 중복 스킵)
 - 저장/로드: `_save()`, `load(filepath, data, data_key)`
-  - pipeline 객체 직접 저장, node_obj_keys로 복원
+  - pipeline, node_obj_keys, collector_keys 저장/복원
 
 ### DataCache (`_experimenter.py`)
 - `cachetools.LRUCache` 기반, 용량(bytes) 단위 관리
@@ -53,9 +56,39 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
   - `load()`: 파일 존재 여부로 status 복원
   - `start_exp()`, `exp_idx()`, `end_exp()`, `get_objs(idx)`, `finalize()`
 
-### 측정/스태킹
-- **Metric** (`_metric.py`): `target_vars`, `output_var`, `metric_func`
-- **Stacking** (`_stacking.py`): `target_vars`, `output_var`, `method`
+### Connector (`_connector.py`)
+- `__init__(node_query=None, edges=None, processor=None)` — 3요소 선택적 매칭
+- `match(node_name, node_attrs)`: 설정된 요소만 검사, 모두 충족 시 True
+  - node_query: str(regex) 또는 list(in), edges: contain 기반 매칭, processor: 일치 검사
+
+### Collector (`collector/` 패키지)
+- **Collector** (`_base.py`): 기본 클래스
+  - `__init__(name, connector)`, `path`는 add_collector 시 설정
+  - 라이프사이클: `_start(node)`, `_collect(node, idx, inner_idx, context)`, `_end_idx(node, idx)`, `_end(node)`
+  - `has_node(node)`, `reset_nodes(nodes)`, `save()`, `load(cls, path)`
+  - `_get_nodes(nodes, available)`: None/list/str(regex) 패턴 매칭
+  - context: `{node_attrs, processor, spec, input, output_train, output_valid}`
+
+- **MetricCollector** (`_metric.py`): 메트릭 수집
+  - `output_var`, `metric_func`, `include_train`
+  - target: `context['input']['y']`, 예측값: `resolve_columns(output_valid, output_var)`
+  - 쿼리: `get_metric(node)`, `get_metrics(nodes)`, `get_metrics_agg(nodes, inner_fold, outer_fold, include_std)`
+
+- **StackingCollector** (`_stacking.py`): 스태킹 데이터 수집
+  - `output_var`, `method`(mean/mode/simple), `include_target`
+  - path 있으면 파일 저장, 없으면 `_mem_data`에 메모리 저장
+  - 쿼리: `get_dataset(experimenter, nodes)` — experimenter를 파라미터로 받음
+
+- **ModelAttrCollector** (`_model_attr.py`): 모델 속성 수집 (feature_importances 등)
+  - `result_key`, `adapter`(default=None, `get_adapter(connector.processor)`로 자동 설정), `params`
+  - `_is_mergeable()`: self.adapter에서 직접 판단
+  - 쿼리: `get_attr(node, idx)`, `get_attrs(nodes)`, `get_attrs_agg(node, agg_inner, agg_outer)`
+
+- **SHAPCollector** (`_shap.py`): SHAP value 수집 (train/valid 비교 분석용)
+  - `explainer_cls`(default=shap.TreeExplainer), `data_filter`(DataFilter 인스턴스)
+  - train/valid 각각 필터 적용 → SHAP 계산 → raw output 저장
+  - 결과: `results[node][(idx, inner_idx)] = {'train', 'valid', 'train_index', 'valid_index', 'columns'}`
+  - 명시적 피처 노드에서만 유의미 (Latent Factor는 fold간 의미 불일치)
 
 ## edges 구조
 - dict 형태: `{key: [(node_name, var_spec), ...], ...}`
@@ -78,16 +111,18 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
 - **_describer.py**: desc_spec, desc_pipeline, desc_node, desc_obj_vars
 - **_logger.py**: BaseLogger, DefaultLogger
 - **col.py**: 컬럼 선택 유틸리티
+- **_connector.py**: Connector (노드 매칭)
+- **collector/**: Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector
+- **filter/**: DataFilter, RandomFilter(n/frac/random_state), IndexFilter(index)
 - **adapter/**: sklearn, xgboost, lightgbm, catboost, keras
 
 ## 저장 구조
 ```
 {experimenter.path}/
-  __exp.pkl                    # pipeline, node_obj_keys, 메타정보
-  __metric/{name}.pkl          # Metric
-  __stacking/{name}/
-    __config.pkl               # Stacking 설정
-    {node}.pkl                 # 노드별 스태킹 데이터
+  __exp.pkl                    # pipeline, node_obj_keys, collector_keys, 메타정보
+  __collector/{name}/
+    __config.pkl               # Collector 설정 + 데이터
+    {node}.pkl                 # StackingCollector 노드별 데이터
   {grp_path}/{node_name}/
     obj{idx}_{no}.pkl          # 빌드 결과 (StageObj/HeadObj)
 ```
