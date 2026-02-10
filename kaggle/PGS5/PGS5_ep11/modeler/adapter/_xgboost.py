@@ -49,7 +49,8 @@ class XGBoostAdapter(ModelAdapter):
         """XGBoost 모델 생성자 파라미터 조정 (ProgressCallback 설정)"""
         if params is None:
             params = {}
-
+        else:
+            params = params.copy()
         if self.verbose > 0 and self.verbose < 1:
             # 0 < verbose < 1: 진행률 기반 출력을 위한 callback 설정
 

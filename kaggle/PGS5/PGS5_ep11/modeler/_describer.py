@@ -76,7 +76,7 @@ def desc_pipeline(pipeline, max_depth=None, direction='TD'):
 
     # 1. Node 단위 우선순위 생성 (BFS)
     node_priorities = {}
-    queue = [('Root', 1)]
+    queue = [('DataSource', 1)]
 
     while queue:
         current_node, priority = queue.pop(0)
@@ -93,7 +93,7 @@ def desc_pipeline(pipeline, max_depth=None, direction='TD'):
                 node_attrs = pipeline.get_node_attrs(name)
                 for key, edge_list in node_attrs['edges'].items():
                     for edge_name, _ in edge_list:
-                        if (current_node == 'Root' and edge_name is None) or (edge_name == current_node):
+                        if (current_node == 'DataSource' and edge_name is None) or (edge_name == current_node):
                             # child 노드 발견
                             if name not in node_priorities:
                                 queue.append((name, priority + 1))
@@ -138,9 +138,9 @@ def desc_pipeline(pipeline, max_depth=None, direction='TD'):
     lines.append(f"graph {direction}")
     lines.append("")
 
-    # Root 노드
-    lines.append("    Root([Root])")
-    lines.append("    style Root fill:#fff9c4,stroke:#f57c00,stroke-width:3px")
+    # DataSource 노드
+    lines.append("    DataSource([DataSource])")
+    lines.append("    style DataSource fill:#fff9c4,stroke:#f57c00,stroke-width:3px")
     lines.append("")
 
     # Recursive 함수로 그룹과 노드 생성
@@ -243,8 +243,8 @@ def desc_pipeline(pipeline, max_depth=None, direction='TD'):
                 for key, edge_list in node_attrs['edges'].items():
                     for edge_name, edge_var in edge_list:
                         if edge_name is None:
-                            # Root 연결
-                            incoming.add(('root', 'Root'))
+                            # DataSource 연결
+                            incoming.add(('datasource', 'DataSource'))
                         elif edge_name in node_to_top:
                             # edge 노드의 최상위 노드 찾기
                             edge_top = node_to_top[edge_name]
@@ -269,8 +269,8 @@ def desc_pipeline(pipeline, max_depth=None, direction='TD'):
         target_id = f"grp_{target_name}" if target_type == 'group' else f"node_{target_name}"
 
         for source_type, source_name in incoming_set:
-            if source_type == 'root':
-                source_id = "Root"
+            if source_type == 'datasource':
+                source_id = "DataSource"
             elif source_type == 'group':
                 source_id = f"grp_{source_name}"
             else:
@@ -297,10 +297,10 @@ def desc_node(pipeline, node_name, direction='TD', show_params=False):
     if node_name not in pipeline.nodes or node_name is None:
         return f"Node '{node_name}' not found"
 
-    # Root에서 node_name까지의 경로 찾기 (BFS)
+    # DataSource에서 node_name까지의 경로 찾기 (BFS)
     def find_paths_to_node(target):
         paths = []
-        queue = [(['Root'], set(['Root']))]
+        queue = [(['DataSource'], set(['DataSource']))]
 
         while queue:
             path, visited = queue.pop(0)
@@ -321,7 +321,7 @@ def desc_node(pipeline, node_name, direction='TD', show_params=False):
                         if found:
                             break
                         for edge_name, _ in edge_list:
-                            if (current == 'Root' and edge_name is None) or (edge_name == current):
+                            if (current == 'DataSource' and edge_name is None) or (edge_name == current):
                                 new_path = path + [name]
                                 new_visited = visited | {name}
                                 queue.append((new_path, new_visited))
@@ -332,7 +332,7 @@ def desc_node(pipeline, node_name, direction='TD', show_params=False):
     paths = find_paths_to_node(node_name)
 
     if not paths:
-        return f"No path from Root to '{node_name}'"
+        return f"No path from DataSource to '{node_name}'"
 
     # Mermaid 생성
     lines = []
@@ -340,16 +340,16 @@ def desc_node(pipeline, node_name, direction='TD', show_params=False):
     lines.append(f"graph {direction}")
     lines.append("")
 
-    # Root 노드
-    lines.append("    Root([Root])")
-    lines.append("    style Root fill:#fff9c4,stroke:#f57c00,stroke-width:3px")
+    # DataSource 노드
+    lines.append("    DataSource([DataSource])")
+    lines.append("    style DataSource fill:#fff9c4,stroke:#f57c00,stroke-width:3px")
     lines.append("")
 
     # 경로에 포함된 모든 노드 수집
     all_nodes = set()
     for path in paths:
         all_nodes.update(path)
-    all_nodes.discard('Root')
+    all_nodes.discard('DataSource')
 
     # 노드의 grp 경로를 구하는 헬퍼
     def get_grp_path(node_name):
@@ -417,13 +417,13 @@ def desc_node(pipeline, node_name, direction='TD', show_params=False):
             for key, edge_list in edges.items():
                 for edge_name, _ in edge_list:
                     if edge_name is None:
-                        source = "Root"
+                        source = "DataSource"
                     else:
                         source = f"node_{edge_name}"
                     target = f"node_{name}"
                     # source가 경로에 포함된 경우만
-                    source_node = edge_name if edge_name else 'Root'
-                    if source_node in all_nodes or source_node == 'Root':
+                    source_node = edge_name if edge_name else 'DataSource'
+                    if source_node in all_nodes or source_node == 'DataSource':
                         edge_key = (source, target)
                         if edge_key not in edges_dict:
                             edges_dict[edge_key] = set()
@@ -440,7 +440,7 @@ def desc_node(pipeline, node_name, direction='TD', show_params=False):
     lines.append("```")
     lines.append("")
     target_display = get_grp_path(node_name)
-    lines.append(f"**Path from Root to '{target_display}' ({len(paths)} path(s) found)**")
+    lines.append(f"**Path from DataSource to '{target_display}' ({len(paths)} path(s) found)**")
 
     # Edge 정보 테이블 추가
     node_attrs = pipeline.get_node_attrs(node_name)
@@ -465,6 +465,81 @@ def desc_node(pipeline, node_name, direction='TD', show_params=False):
 
     return "\n".join(lines)
 
+def desc_status(exp):
+    stage_nodes = []
+    head_nodes = []
+    for name in exp.pipeline.nodes.keys():
+        if name is None:
+            continue
+        node = exp.pipeline.get_node(name)
+        grp = exp.pipeline.get_grp(node.grp)
+        if grp.role == 'stage':
+            stage_nodes.append(name)
+        elif grp.role == 'head':
+            head_nodes.append(name)
+
+    def _get_status(name):
+        if name not in exp.node_objs:
+            return 'init'
+        return exp.node_objs[name].status
+
+    def _status_summary(nodes):
+        counts = {}
+        for name in nodes:
+            s = _get_status(name)
+            counts[s] = counts.get(s, 0) + 1
+        return counts
+
+    lines = []
+
+    # Experiment status
+    exp_status = getattr(exp, 'status', 'open')
+    lines.append(f"**Experiment**: {exp_status}")
+    lines.append("")
+
+    # Stage Nodes
+    stage_counts = _status_summary(stage_nodes)
+    lines.append(f"**Stage Nodes** ({len(stage_nodes)})")
+    lines.append("")
+    if stage_nodes:
+        parts = [f"{s}: {c}" for s, c in sorted(stage_counts.items())]
+        lines.append(f"| {' | '.join(stage_counts.keys())} |")
+        lines.append(f"| {' | '.join(['---'] * len(stage_counts))} |")
+        lines.append(f"| {' | '.join(str(c) for c in stage_counts.values())} |")
+    lines.append("")
+
+    # Head Nodes
+    head_counts = _status_summary(head_nodes)
+    lines.append(f"**Head Nodes** ({len(head_nodes)})")
+    lines.append("")
+    if head_nodes:
+        lines.append(f"| {' | '.join(head_counts.keys())} |")
+        lines.append(f"| {' | '.join(['---'] * len(head_counts))} |")
+        lines.append(f"| {' | '.join(str(c) for c in head_counts.values())} |")
+    lines.append("")
+
+    # Error details
+    error_nodes = []
+    for name in stage_nodes + head_nodes:
+        if name in exp.node_objs and exp.node_objs[name].status == 'error':
+            error_nodes.append(name)
+
+    if error_nodes:
+        lines.append(f"**Errors** ({len(error_nodes)})")
+        lines.append("")
+        for name in error_nodes:
+            err = exp.node_objs[name].error
+            node = exp.pipeline.get_node(name)
+            grp = exp.pipeline.get_grp(node.grp)
+            lines.append(f"### {name} ({grp.role})")
+            lines.append(f"- **fold**: {err['fold']}")
+            lines.append(f"- **{err['type']}**: {err['message']}")
+            lines.append(f"```\n{err['traceback']}```")
+            lines.append("")
+
+    return "\n".join(lines)
+
+
 def desc_obj_vars(exp, obj_vars):
     # 첫 번째 항목 사용 (가장 빈도 높은 것)
     input_vars, output_vars, fold_indices = obj_vars
@@ -475,7 +550,7 @@ def desc_obj_vars(exp, obj_vars):
         if '__' in var:
             node = var.split('__')[0]
         else:
-            node = 'Root'
+            node = 'DataSource'
         input_data.append({'node': node, 'name': var})
 
     if input_data:

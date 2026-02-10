@@ -15,13 +15,13 @@ from sklearn.model_selection import ShuffleSplit
 
 from ._data_wrapper import wrap, unwrap
 from ._expobj import HeadObj, StageObj
-from ._describer import desc_spec, desc_obj_vars
+from ._describer import desc_spec, desc_status, desc_obj_vars
 from ._logger import DefaultLogger
 
 from ._pipeline import Pipeline
 from ._node_processor import resolve_columns
 from ._connector import Connector
-from .collector import Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector
+from .collector import Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector
 
 def _get_data_size(data):
     if data is None:
@@ -152,11 +152,18 @@ class Experimenter():
     def get_n_splits_inner(self):
         return len(self.train_idx_list[0])
 
-    def add_collector(self, collector):
+    def add_collector(self, collector, exist = 'skip'):
+        if collector.name in self.collectors:
+            if exist == 'skip':
+                return self.collectors[collector.name]
+            elif exist == 'error':
+                raise RuntimeError("")
+        
         self._check_open()
         collector.path = self.path / '__collector' / collector.name
         collector.save()
         self.collectors[collector.name] = collector
+        self.collect(collector)
         self._save()
         return collector
 
@@ -200,15 +207,15 @@ class Experimenter():
         grp_path = self.get_grp_path(node.grp)
         return grp_path / node.name
 
-    def set_grp(self, name, role=None, processor=None, edges=None, method=None, parent=None, adapter=None, params=None, replace = False):
+    def set_grp(self, name, role=None, processor=None, edges=None, method=None, parent=None, adapter=None, params=None, exist = 'skip'):
         self._check_open()
         result_obj = self.pipeline.set_grp(
-            name, role, processor, edges, method, parent, adapter, params, replace
+            name, role, processor, edges, method, parent, adapter, params, exist
         )
         
         affected_nodes = result_obj['affected_nodes']
-        self._reset_nodes(affected_nodes)
-        new_grp_path = self.get_grp_path(result_obj['obj'])
+        self.reset_nodes(affected_nodes)
+        new_grp_path = self.get_grp_path(result_obj['grp'])
         if "old_grp" in result_obj:
             old_grp_path = self.get_grp_path(result_obj['old_grp'])
             if old_grp_path != new_grp_path:
@@ -309,23 +316,25 @@ class Experimenter():
 
     def set_node(
         self, name, grp, processor = None, edges = None,
-        method = None, adapter = None, params = None, replace = False
+        method = None, adapter = None, params = None, exist = 'skip'
     ):
         self._check_open()
         result_obj = self.pipeline.set_node(
-            name, grp, processor, edges, method, adapter, params, replace
+            name, grp, processor, edges, method, adapter, params, exist
         )
 
         # 기존 노드를 업데이트한 경우, 하위 노드들도 재빌드
         if len(result_obj['affected_nodes']) > 0:
             affected_nodes = result_obj['affected_nodes']
             self.logger.info(f"Affected {len(affected_nodes)} dependent node(s): {sorted(affected_nodes)}")
-            self._reset_nodes(affected_nodes)
-        
+            self.reset_nodes(affected_nodes)
+
+        if result_obj['result'] == 'update':
+            self.reset_nodes([name])
         self._save()
         return result_obj
 
-    def _reset_nodes(self, nodes):
+    def reset_nodes(self, nodes):
         for i in nodes:
             if i in self.node_objs:
                 del self.node_objs[i]
@@ -356,33 +365,46 @@ class Experimenter():
         
         n_splits = self.get_n_splits()
         self.logger.start_progress("Build", n_splits)
-        try:
-            for i in range(n_splits):
-                self.logger.update_progress(i)
-                self.logger.start_progress("Node", len(target_nodes))
-                for ni, node in enumerate(target_nodes):
-                    self.logger.update_progress(ni)
-                    self.logger._progress[-1][0] = node
+        for i in range(n_splits):
+            self.logger.update_progress(i)
+            self.logger.start_progress("Node", len(target_nodes))
+            for ni, node in enumerate(target_nodes):
+                self.logger.update_progress(ni)
+                self.logger._progress[-1][0] = node
+                node_obj = self.node_objs[node]
+                if node_obj.status == 'error':
+                    continue
+                try:
                     with warnings.catch_warnings(record=True) as caught:
                         warnings.simplefilter("always")
-                        node_obj = self.node_objs[node]
                         node_attrs = self.pipeline.get_node_attrs(node)
-                        result_iter = node_obj.build_idx(
+                        node_obj.build_idx(
                             i, node_attrs, self.get_node_data(node, i), self.logger
                         )
                         for w in caught:
                             self.logger.warning(f"[{node}] fold {i}: {w.category.__name__}: {w.message}")
-                self.logger.end_progress(len(target_nodes))
-            self.logger.end_progress(n_splits)
-        except Exception as e:
-            self.logger.clear_progress()
-            self.logger.info(f"Build failed at fold {i}, node '{node}': {type(e).__name__}: {e}")
-            self.logger.info(traceback.format_exc())
-            raise
+                except Exception as e:
+                    node_obj.status = 'error'
+                    node_obj.error = {
+                        'type': type(e).__name__,
+                        'message': str(e),
+                        'traceback': traceback.format_exc(),
+                        'fold': i,
+                    }
+                    self.logger.info(f"[{node}] Build error at fold {i}: {type(e).__name__}: {e}")
+                    self.logger.info(traceback.format_exc())
+            self.logger.end_progress(len(target_nodes))
+        self.logger.end_progress(n_splits)
+
+        error_nodes = [n for n in target_nodes if self.node_objs[n].status == 'error']
         for node in target_nodes:
             node_obj = self.node_objs[node]
-            node_obj.end_build()
-        self.logger.info(f"Build complete: {len(target_nodes)} node(s)")
+            if node_obj.status != 'error':
+                node_obj.end_build()
+        if error_nodes:
+            self.logger.info(f"Build complete: {len(target_nodes) - len(error_nodes)}/{len(target_nodes)} node(s), {len(error_nodes)} error(s): {error_nodes}")
+        else:
+            self.logger.info(f"Build complete: {len(target_nodes)} node(s)")
     
     def exp(self, nodes = None):
         self._check_open()
@@ -423,17 +445,19 @@ class Experimenter():
         # experiment loop
         n_splits = self.get_n_splits()
         self.logger.start_progress("Exp", n_splits)
-        try:
-            for i in range(n_splits):
-                self.logger.update_progress(i)
+        for i in range(n_splits):
+            self.logger.update_progress(i)
 
-                self.logger.start_progress("Node", len(target_nodes))
-                for ni, node in enumerate(target_nodes):
-                    self.logger.update_progress(ni)
-                    self.logger._progress[-1][0] = node
+            self.logger.start_progress("Node", len(target_nodes))
+            for ni, node in enumerate(target_nodes):
+                self.logger.update_progress(ni)
+                self.logger._progress[-1][0] = node
+                node_obj = self.node_objs[node]
+                if node_obj.status == 'error':
+                    continue
+                try:
                     with warnings.catch_warnings(record=True) as caught:
                         warnings.simplefilter("always")
-                        node_obj = self.node_objs[node]
                         node_attrs = node_attrs_cache[node]
                         result_iter = node_obj.exp_idx(
                             i, node_attrs, self.get_node_data(node, i), self.logger
@@ -459,38 +483,52 @@ class Experimenter():
                     for name, collector in self.collectors.items():
                         if node in matched[name]:
                             collector._end_idx(node, i)
+                except Exception as e:
+                    node_obj.status = 'error'
+                    node_obj.error = {
+                        'type': type(e).__name__,
+                        'message': str(e),
+                        'traceback': traceback.format_exc(),
+                        'fold': i,
+                    }
+                    self.logger.info(f"[{node}] Exp error at fold {i}: {type(e).__name__}: {e}")
+                    self.logger.info(traceback.format_exc())
+                    for name, collector in self.collectors.items():
+                        if node in matched[name]:
+                            collector.reset_nodes([node])
 
-                self.logger.end_progress(len(target_nodes))
-            self.logger.end_progress(n_splits)
-        except Exception as e:
-            self.logger.clear_progress()
-            self.logger.info(f"Exp failed at fold {i}, node '{node}': {type(e).__name__}: {e}")
-            self.logger.info(traceback.format_exc())
-            for v in self.collectors.values():
-                v.reset_nodes(target_nodes)
-            raise
+            self.logger.end_progress(len(target_nodes))
+        self.logger.end_progress(n_splits)
 
-        # end_experiment for all nodes
+        error_nodes = [n for n in target_nodes if self.node_objs[n].status == 'error']
+        # end_experiment for non-error nodes
         for node in target_nodes:
             node_obj = self.node_objs[node]
-            node_obj.end_exp()
+            if node_obj.status != 'error':
+                node_obj.end_exp()
 
-        # collector _end
+        # collector _end for non-error nodes
         for name, collector in self.collectors.items():
             for node in target_nodes:
-                if node in matched[name]:
+                if node in matched[name] and self.node_objs[node].status != 'error':
                     collector._end(node)
 
-        self.logger.info(f"Experimentation complete: {len(target_nodes)} node(s)")
+        if error_nodes:
+            self.logger.info(f"Experimentation complete: {len(target_nodes) - len(error_nodes)}/{len(target_nodes)} node(s), {len(error_nodes)} error(s): {error_nodes}")
+        else:
+            self.logger.info(f"Experimentation complete: {len(target_nodes)} node(s)")
+        self._save()
 
-    def collect(self, collector):
+    def collect(self, collector, exist = 'skip'):
         # built head 노드 중 connector 매칭
         target_nodes = []
         node_attrs_cache = {}
         for name in self.pipeline._get_effected_nodes([None]):
             node = self.pipeline.get_node(name)
             grp = self.pipeline.get_grp(node.grp)
-            if grp.role != 'head' or name not in self.node_objs:
+            if name not in self.node_objs:
+                continue
+            if exist == 'skip' and collector.has(name):
                 continue
             node_obj = self.node_objs[name]
             if node_obj.status != 'built':
@@ -504,8 +542,13 @@ class Experimenter():
             collector._start(node)
 
         n_splits = self.get_n_splits()
+        self.logger.start_progress("Collect", n_splits)
         for idx in range(n_splits):
-            for node in target_nodes:
+            self.logger.update_progress(idx)
+            self.logger.start_progress("Node", len(target_nodes))
+            for ni, node in enumerate(target_nodes):
+                self.logger.update_progress(ni)
+                self.logger._progress[-1][0] = node
                 node_obj = self.node_objs[node]
                 node_attrs = node_attrs_cache[node]
                 result_iter = node_obj.exp_idx(
@@ -522,6 +565,8 @@ class Experimenter():
                     }
                     collector._collect(node, idx, inner_idx, context)
                 collector._end_idx(node, idx)
+            self.logger.end_progress(len(target_nodes))
+        self.logger.end_progress(n_splits)
 
         for node in target_nodes:
             collector._end(node)
@@ -777,7 +822,7 @@ class Experimenter():
     
     def get_node_info(self):
         lines = [f"# Experiment Pipeline Summary\n"]
-        lines.append(f"- **Root**: DataSource\n")
+        lines.append(f"- **DataSource**\n")
 
         for name in self.pipeline.nodes.keys():
             if name is None:
@@ -787,7 +832,7 @@ class Experimenter():
             processor_name = node_attrs['processor'].__name__ if node_attrs['processor'] else 'None'
             edges_info_parts = []
             for key, edge_list in node_attrs['edges'].items():
-                edge_strs = [f"{n or 'Root'}{f'[{v}]' if v else ''}" for n, v in edge_list]
+                edge_strs = [f"{n or 'DataSource'}{f'[{v}]' if v else ''}" for n, v in edge_list]
                 edges_info_parts.append(f"{key}: [{', '.join(edge_strs)}]")
             edges_info = ", ".join(edges_info_parts)
             lines.append(f"## {name}")
@@ -990,6 +1035,9 @@ class Experimenter():
             raise RuntimeError("")
         self.pipeline = pipeline.copy()
     
+    def desc_status(self):
+        return desc_status(self)
+
     def desc_spec(self):
         return desc_spec(self)
 

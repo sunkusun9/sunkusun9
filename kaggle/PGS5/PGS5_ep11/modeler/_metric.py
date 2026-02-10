@@ -129,7 +129,7 @@ class Metric:
 
     def _get_nodes(self, nodes):
         if nodes is None:
-            # 기존 동작: 모든 root group의 노드
+            # 기존 동작: 모든 노드
             node_names = list(self.metrics.keys())
         elif isinstance(nodes, list):
             node_names = [n for n in nodes if n in self.metrics]

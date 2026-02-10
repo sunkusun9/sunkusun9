@@ -180,9 +180,13 @@ class StackingCollector(Collector):
                 )
             ] + [target], axis=1).iloc(sort_order).data
         else:
-            target = self._build_target_value(experimenter)
-            wrapper_cls = type(target)
+            wrapper_cls = type(experimenter.data)
+            all_valid_idx = np.concatenate([
+                experimenter.valid_idx_list[i]
+                for i in range(experimenter.get_n_splits())
+            ])
+            index = experimenter.data.iloc(all_valid_idx).get_index()
             return wrapper_cls.from_output(
                 np.concatenate(node_data, axis=1),
-                column_names, target.get_index()
+                column_names, index
             ).iloc(sort_order).data

@@ -1,6 +1,6 @@
 from ._experimenter import Experimenter
 from ._connector import Connector
-from .collector import Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector
+from .collector import Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector
 from .filter import DataFilter, RandomFilter, IndexFilter
 
 __all__ = [
@@ -11,6 +11,7 @@ __all__ = [
     'StackingCollector',
     'ModelAttrCollector',
     'SHAPCollector',
+    'OutputCollector',
     'DataFilter',
     'RandomFilter',
     'IndexFilter',

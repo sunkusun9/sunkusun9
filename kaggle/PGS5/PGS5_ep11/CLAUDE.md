@@ -15,10 +15,11 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
 
 ### Pipeline 계층 (`_pipeline.py`)
 - **Pipeline**: 노드 그래프 관리
-  - `nodes`: `{name: PipelineNode}`, `grps`: `{name: PipelineGroup}`
-  - `set_grp`, `set_node`, `rename_grp`, `remove_grp`, `remove_node`
+  - `nodes`: `{name: PipelineNode}` (None=DataSource), `grps`: `{name: PipelineGroup}`
+  - `set_grp(exist='skip'|'error'|'replace')`, `set_node(exist=...)`, `rename_grp`, `remove_grp`, `remove_node`
   - `get_node_names(query)`, `get_node_attrs(name)`, `_get_effected_nodes(nodes)`
   - `copy()`, `copy_stage()`, `copy_nodes(node_names)` — 선택적 복사
+  - `compare_nodes(nodes)` → `{processor_name: DataFrame}` (params 차이 + edges['X'] stage별 변수 차이)
 
 - **PipelineGroup**: 노드 그룹 (stage/head 역할)
   - 속성: `name`, `role`, `processor`, `edges`, `method`, `parent`, `adapter`, `params`
@@ -36,9 +37,9 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
 - `node_objs`: `{node_name: StageObj|HeadObj}`
 - `cache`: DataCache (LRU, 용량 기반)
 - 실행: `build(nodes)` (stage), `exp(nodes)` (head)
-- 상태관리: `_reset_nodes(nodes)` - node_objs, cache, collectors 초기화
+- 상태관리: `reset_nodes(nodes)` - node_objs, cache, collectors 초기화
 - `add_collector(collector)`: Collector 등록 (path 설정, save)
-- `collect(collector)`: ad-hoc 수집 (빌드 완료된 head 노드 대상, has_node으로 중복 스킵)
+- `collect(collector, exist='skip')`: ad-hoc 수집 (빌드 완료된 head 노드 대상, progress 포함)
 - 저장/로드: `_save()`, `load(filepath, data, data_key)`
   - pipeline, node_obj_keys, collector_keys 저장/복원
 
@@ -49,12 +50,16 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
 
 ### ExpObj (`_expobj.py`)
 - **StageObj**: stage 역할 노드의 빌드 객체
-  - `load()`: 파일에서 objs_ 복원, 없으면 status='finalized'
-  - `start_build()`, `build_idx()`, `end_build()`, `get_objs(idx)`, `finalize()`
+  - `status`: None(init) / 'built' / 'finalized' / 'error'
+  - `error`: 에러 정보 dict `{type, message, traceback, fold}` (error 상태 시)
+  - `load()`, `start_build()`, `build_idx()`, `end_build()`, `get_objs(idx)`, `finalize()`
 
 - **HeadObj**: head 역할 노드의 실험 객체
-  - `load()`: 파일 존재 여부로 status 복원
-  - `start_exp()`, `exp_idx()`, `end_exp()`, `get_objs(idx)`, `finalize()`
+  - `status`: None(init) / 'built' / 'finalized' / 'error'
+  - `error`: 에러 정보 dict (error 상태 시)
+  - `load()`, `start_exp()`, `exp_idx()`, `end_exp()`, `get_objs(idx)`, `finalize()`
+
+- **에러 처리**: build/exp 중 노드별 try/except, error 시 나머지 노드 계속 진행
 
 ### Connector (`_connector.py`)
 - `__init__(node_query=None, edges=None, processor=None)` — 3요소 선택적 매칭
@@ -65,6 +70,7 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
 - **Collector** (`_base.py`): 기본 클래스
   - `__init__(name, connector)`, `path`는 add_collector 시 설정
   - 라이프사이클: `_start(node)`, `_collect(node, idx, inner_idx, context)`, `_end_idx(node, idx)`, `_end(node)`
+  - `has(node)`: 수집 결과 보유 여부 (has_node에 위임)
   - `has_node(node)`, `reset_nodes(nodes)`, `save()`, `load(cls, path)`
   - `_get_nodes(nodes, available)`: None/list/str(regex) 패턴 매칭
   - context: `{node_attrs, processor, spec, input, output_train, output_valid}`
@@ -88,13 +94,24 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
   - `explainer_cls`(default=shap.TreeExplainer), `data_filter`(DataFilter 인스턴스)
   - train/valid 각각 필터 적용 → SHAP 계산 → raw output 저장
   - 결과: `results[node][(idx, inner_idx)] = {'train', 'valid', 'train_index', 'valid_index', 'columns'}`
-  - 명시적 피처 노드에서만 유의미 (Latent Factor는 fold간 의미 불일치)
+
+- **OutputCollector** (`_output.py`): output_train/output_valid 원본 저장
+  - `output_var`, `include_target`
+  - 파일 저장: `{path}/{node}/{idx}_{inner_idx}.pkl`
+  - 쿼리: `get_output(node, idx, inner_idx)`, `get_outputs(node)`
 
 ## edges 구조
 - dict 형태: `{key: [(node_name, var_spec), ...], ...}`
 - key: 변수 집합 이름 (예: 'X', 'y', 'sample_weight')
+- node_name: stage 노드명 (None=DataSource)
+- var_spec: 변수 선택 (None=전체, str, list, callable, tuple)
 - 같은 key의 데이터는 column 방향으로 concat
 - 상위→하위 병합: 같은 key면 extend
+
+## exist 파라미터 (set_grp, set_node, collect)
+- `'skip'` (default): 이미 존재하면 무시하고 반환
+- `'error'`: 이미 존재하면 ValueError
+- `'replace'`: 기존 객체를 업데이트
 
 ## Processor (`_node_processor.py`)
 - **TransformProcessor**: `fit`, `fit_process`, `process`
@@ -107,12 +124,12 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
 - `result_objs`: `{name: (callable, mergeable_bool)}`
 
 ## 보조 모듈
-- **_data_wrapper.py**: DataWrapper (wrap/unwrap)
-- **_describer.py**: desc_spec, desc_pipeline, desc_node, desc_obj_vars
-- **_logger.py**: BaseLogger, DefaultLogger
+- **_data_wrapper.py**: DataWrapper (wrap/unwrap) — pandas/polars/cudf/numpy 통합
+- **_describer.py**: desc_spec, desc_status, desc_pipeline, desc_node, desc_obj_vars (DataSource 기준)
+- **_logger.py**: BaseLogger, DefaultLogger (start/update/end_progress, adhoc_progress)
 - **col.py**: 컬럼 선택 유틸리티
 - **_connector.py**: Connector (노드 매칭)
-- **collector/**: Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector
+- **collector/**: Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector
 - **filter/**: DataFilter, RandomFilter(n/frac/random_state), IndexFilter(index)
 - **adapter/**: sklearn, xgboost, lightgbm, catboost, keras
 
@@ -123,6 +140,7 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
   __collector/{name}/
     __config.pkl               # Collector 설정 + 데이터
     {node}.pkl                 # StackingCollector 노드별 데이터
+    {node}/{idx}_{inner_idx}.pkl  # OutputCollector fold별 데이터
   {grp_path}/{node_name}/
     obj{idx}_{no}.pkl          # 빌드 결과 (StageObj/HeadObj)
 ```

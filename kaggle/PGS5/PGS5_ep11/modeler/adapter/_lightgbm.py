@@ -4,6 +4,7 @@ LightGBM adapter
 
 import pandas as pd
 from ._base import ModelAdapter
+from lightgbm import early_stopping
 
 def create_progress_callback(n_estimators, period_pct, logger):
     last_printed = [-1]  # mutable object
@@ -32,6 +33,16 @@ class LightGBMAdapter(ModelAdapter):
 
     LightGBM도 eval_set 파라미터를 사용하지만 약간 다른 방식입니다.
     """
+    def get_params(self, params, logger = None):
+        """모델 생성자에 전달할 파라미터를 조정
+
+        Args:
+            params (dict): 원본 파라미터
+
+        Returns:
+            dict: 조정된 파라미터
+        """
+        return {k: v for k, v in params.items() if k not in ['early_stopping', 'eval_metric']}
 
     def get_fit_params(self, data_dict, X, y=None, params=None, logger=None):
         """LightGBM의 fit 파라미터 구성"""
@@ -71,7 +82,13 @@ class LightGBMAdapter(ModelAdapter):
             else:
                 # verbose >= 1: LightGBM 기본 verbose (iteration 단위)
                 fit_params['verbose'] = int(self.verbose)
-
+        
+        if 'early_stopping' in params:
+            if 'callbacks' not in fit_params:
+                fit_params['callbacks'] = list()
+            fit_params['callbacks'].append(params['early_stopping'])
+        if 'eval_metric' in params:
+            fit_params['eval_metric'] = params['eval_metric']
         return fit_params
 
     @staticmethod

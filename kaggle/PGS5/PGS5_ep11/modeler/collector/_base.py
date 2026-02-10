@@ -19,6 +19,9 @@ class Collector:
     def _end(self, node):
         pass
 
+    def has(self, node):
+        return self.has_node(node)
+
     def has_node(self, node):
         return False
 

@@ -73,6 +73,7 @@ class StageObj():
     def __init__(self, path):
         self.path = path
         self.status = None
+        self.error = None
 
     def load(self):
         if not os.path.isdir(self.path):
@@ -137,6 +138,7 @@ class HeadObj():
     def __init__(self, path):
         self.path = path
         self.status = None
+        self.error = None
 
     def load(self):
         if not os.path.isdir(self.path):
