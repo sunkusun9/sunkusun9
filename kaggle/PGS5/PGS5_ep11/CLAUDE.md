@@ -17,7 +17,7 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
 - **Pipeline**: 노드 그래프 관리
   - `nodes`: `{name: PipelineNode}` (None=DataSource), `grps`: `{name: PipelineGroup}`
   - `set_grp(exist='skip'|'error'|'replace')`, `set_node(exist=...)`, `rename_grp`, `remove_grp`, `remove_node`
-  - `get_node_names(query)`, `get_node_attrs(name)`, `_get_effected_nodes(nodes)`
+  - `get_node_names(query)`, `get_node_attrs(name)`, `_get_affected_nodes(nodes)`
   - `copy()`, `copy_stage()`, `copy_nodes(node_names)` — 선택적 복사
   - `compare_nodes(nodes)` → `{processor_name: DataFrame}` (params 차이 + edges['X'] stage별 변수 차이)
 
@@ -60,6 +60,30 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
   - `load()`, `start_exp()`, `exp_idx()`, `end_exp()`, `get_objs(idx)`, `finalize()`
 
 - **에러 처리**: build/exp 중 노드별 try/except, error 시 나머지 노드 계속 진행
+
+### Trainer (`_trainer.py`)
+- 생성자: `(name, pipeline, data, path, splitter, splitter_params, cache, logger)`
+- `split_indices`: 생성자에서 `_make_splits()` 호출하여 생성. `splitter=None`이면 `None` (전체 데이터, split 없음)
+- `selected_stages`, `selected_heads`: `select_head(nodes)`로 설정
+- `node_objs`: `{node_name: TrainStageObj|TrainHeadObj}`
+- `cache`: Experimenter에서 전달받은 DataCache 공유 (type key: `"train_all"`)
+- `select_head(nodes)`: head 노드 지정 + upstream stage 자동 수집, `_get_affected_nodes`로 순서 정렬
+- `train()`: 미빌드 노드만 대상, 노드별 전체 split 처리 후 다음 노드로 진행
+- `process(data, v=None)`: generator, split마다 head output을 v로 필터 후 concat하여 yield. 호출측에서 집계
+- `_process_node(obj, data_dicts, edges)`: 단일 노드 process
+- `_get_process_data(data_dicts, edges)`: edges에서 입력 데이터 resolve
+- `reset_nodes(nodes)`: 하위 종속 노드 포함 초기화
+- 저장/로드: `save()`, `_load(path, pipeline, data, cache, logger)`
+
+### TrainObj (`_trainobj.py`)
+- `_train_build(node_attrs, data_dict, logger)`: Processor 생성 → fit/fit_process → `(obj, result, info)` 반환
+- **TrainStageObj**: stage 노드용, `objs_` dict에 메모리 보관
+  - `get_obj()`: generator, split 순서대로 `(obj, result, info)` yield
+  - 파일: `obj{split_idx}.pkl`
+- **TrainHeadObj**: head 노드용, 디스크에서 lazy load
+  - `get_obj()`: generator, 파일에서 순차 로드하여 yield
+  - 파일: `obj{split_idx}.pkl`
+- Trainer용 `data_dict`: `{key: (train, valid)}` (Experimenter의 `((train, train_v), valid)`과 다름)
 
 ### Connector (`_connector.py`)
 - `__init__(node_query=None, edges=None, processor=None)` — 3요소 선택적 매칭
@@ -116,7 +140,8 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
 ## Processor (`_node_processor.py`)
 - **TransformProcessor**: `fit`, `fit_process`, `process`
 - **PredictProcessor**: `fit`, `fit_process`, `process`
-- `data_dict`: `{key: ((train, train_v), valid), ...}` 형태
+- `data_dict` (Experimenter): `{key: ((train, train_v), valid), ...}` 형태
+- `data_dict` (Trainer): `{key: (train, valid), ...}` 형태 (inner fold 없음)
 
 ## Adapter 인터페이스
 - `get_params(params, logger)`: 모델 생성 파라미터
@@ -143,4 +168,9 @@ CLAUDE.md에서 불필요하게 토큰을 낭비 하지 않도록, 작업 내역
     {node}/{idx}_{inner_idx}.pkl  # OutputCollector fold별 데이터
   {grp_path}/{node_name}/
     obj{idx}_{no}.pkl          # 빌드 결과 (StageObj/HeadObj)
+
+{trainer.path}/
+  __trainer.pkl                # name, splitter, selected_stages/heads, node_obj_keys, split_indices
+  {grp_path}/{node_name}/
+    obj{split_idx}.pkl         # 빌드 결과 (TrainStageObj/TrainHeadObj)
 ```

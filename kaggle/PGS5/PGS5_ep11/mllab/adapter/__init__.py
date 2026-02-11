@@ -3,26 +3,25 @@ Model adapters for handling eval_set in different ML frameworks
 """
 
 from ._base import ModelAdapter
-from ._xgboost import XGBoostAdapter
-from ._lightgbm import LightGBMAdapter
 from ._catboost import CatBoostAdapter
 from ._keras import KerasAdapter
 from ._default import DefaultAdapter
 from ._sklearn import LMAdapter, PCAAdapter, LDAAdapter, DecisionTreeAdapter
 
+try:
+    from ._xgboost import XGBoostAdapter
+except ImportError:
+    XGBoostAdapter = None
+
+try:
+    from ._lightgbm import LightGBMAdapter
+except ImportError:
+    LightGBMAdapter = None
+
 # Model adapter registry (인스턴스 저장)
 # 모델 클래스명을 키로, 해당 어댑터 인스턴스를 값으로 매핑
 # 기본 설정: eval_mode='both', verbose=0.1
 MODEL_ADAPTERS = {
-    'XGBClassifier': XGBoostAdapter(),
-    'XGBRegressor': XGBoostAdapter(),
-    'XGBRFClassifier': XGBoostAdapter(),
-    'XGBRFRegressor': XGBoostAdapter(),
-
-    'LGBMClassifier': LightGBMAdapter(),
-    'LGBMRegressor': LightGBMAdapter(),
-    'LGBMRanker': LightGBMAdapter(),
-
     'CatBoostClassifier': CatBoostAdapter(),
     'CatBoostRegressor': CatBoostAdapter(),
     'CatBoostRanker': CatBoostAdapter(),
@@ -40,6 +39,21 @@ MODEL_ADAPTERS = {
     'DecisionTreeClassifier': DecisionTreeAdapter(),
     'DecisionTreeRegressor': DecisionTreeAdapter(),
 }
+
+if XGBoostAdapter is not None:
+    MODEL_ADAPTERS.update({
+        'XGBClassifier': XGBoostAdapter(),
+        'XGBRegressor': XGBoostAdapter(),
+        'XGBRFClassifier': XGBoostAdapter(),
+        'XGBRFRegressor': XGBoostAdapter(),
+    })
+
+if LightGBMAdapter is not None:
+    MODEL_ADAPTERS.update({
+        'LGBMClassifier': LightGBMAdapter(),
+        'LGBMRegressor': LightGBMAdapter(),
+        'LGBMRanker': LightGBMAdapter(),
+    })
 
 
 def get_adapter(model_or_name):

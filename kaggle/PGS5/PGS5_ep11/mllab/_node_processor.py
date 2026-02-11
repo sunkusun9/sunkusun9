@@ -90,15 +90,15 @@ class TransformProcessor():
 
     def fit(self, data_dict):
         # X key로 데이터 가져오기
-        (train_X, train_v_X), valid_X = data_dict['X']
+        train_X, train_v_X = data_dict['X']
         self.X_ = train_X.get_columns()
 
         # y key로 데이터 가져오기 (있으면)
         if 'y' in data_dict:
-            (train_y, train_v_y), valid_y = data_dict['y']
+            train_y, train_v_y = data_dict['y']
             self.y_columns = train_y.get_columns()
         else:
-            train_y, train_v_y, valid_y = None, None, None
+            train_y, train_v_y = None, None
             self.y_columns = None
 
         params = self.adapter.get_params(self.params, logger = self.logger) if self.adapter is not None else self.params
@@ -134,16 +134,16 @@ class TransformProcessor():
 
     def fit_process(self, data_dict):
         # X key로 데이터 가져오기
-        (train_X, train_v_X), valid_X = data_dict['X']
+        train_X, train_v_X = data_dict['X']
         self.X_ = train_X.get_columns()
         train_index = train_X.get_index()
 
         # y key로 데이터 가져오기 (있으면)
         if 'y' in data_dict:
-            (train_y, train_v_y), valid_y = data_dict['y']
+            train_y, train_v_y = data_dict['y']
             self.y_columns = train_y.get_columns()
         else:
-            train_y, train_v_y, valid_y = None, None, None
+            train_y, train_v_y = None, None
             self.y_columns = None
 
         params = self.adapter.get_params(self.params, logger = self.logger) if self.adapter is not None else self.params
@@ -203,15 +203,15 @@ class PredictProcessor():
 
     def fit(self, data_dict):
         # X key로 데이터 가져오기
-        (train_X, train_v_X), valid_X = data_dict['X']
+        train_X, train_v_X = data_dict['X']
         self.X_ = train_X.get_columns()
 
         # y key로 데이터 가져오기 (있으면)
         if 'y' in data_dict:
-            (train_y, train_v_y), valid_y = data_dict['y']
+            train_y, train_v_y = data_dict['y']
             self.y_columns = train_y.get_columns()
         else:
-            train_y, train_v_y, valid_y = None, None, None
+            train_y, train_v_y = None, None
             self.y_columns = None
 
         # adapter가 있으면 params 조정 (callbacks 등 설정)
@@ -259,16 +259,16 @@ class PredictProcessor():
 
     def fit_process(self, data_dict):
         # X key로 데이터 가져오기
-        (train_X, train_v_X), valid_X = data_dict['X']
+        train_X, train_v_X = data_dict['X']
         self.X_ = train_X.get_columns()
         train_index = train_X.get_index()
 
         # y key로 데이터 가져오기 (있으면)
         if 'y' in data_dict:
-            (train_y, train_v_y), valid_y = data_dict['y']
+            train_y, train_v_y = data_dict['y']
             self.y_columns = train_y.get_columns()
         else:
-            train_y, train_v_y, valid_y = None, None, None
+            train_y, train_v_y = None, None
             self.y_columns = None
 
         # adapter가 있으면 params 조정 (callbacks 등 설정)

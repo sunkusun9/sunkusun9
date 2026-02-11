@@ -51,11 +51,11 @@ class LightGBMAdapter(ModelAdapter):
         fit_params = {}
 
         # data_dict에서 데이터 추출
-        (train_X, train_v_X), valid_X = data_dict['X']
+        train_X, train_v_X = data_dict['X']
         if 'y' in data_dict:
-            (train_y, train_v_y), valid_y = data_dict['y']
+            train_y, train_v_y = data_dict['y']
         else:
-            train_y, train_v_y, valid_y = None, None, None
+            train_y, train_v_y = None, None
 
         # eval_set 구성
         if self.eval_mode and self.eval_mode != 'none' and train_v_X is not None and train_v_y is not None:

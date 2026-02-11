@@ -15,16 +15,18 @@ def _build_sub(node_attrs, data_dict, fit_process, logger):
     else:
         obj = PredictProcessor(node_attrs['name'], node_attrs['processor'], method, node_attrs['adapter'], node_attrs['params'], logger = logger)
 
+    # (train, train_v) only — strip valid from ((train, train_v), valid)
+    fit_data = {key: val[0] for key, val in data_dict.items()}
+
     start_time = time.time()
     if fit_process:
-        result = obj.fit_process(data_dict)
+        result = obj.fit_process(fit_data)
     else:
         result = None
-        obj.fit(data_dict)
+        obj.fit(fit_data)
     elapsed_time = time.time() - start_time
 
-    # X key로 shape 정보 가져오기
-    (train_X, train_v_X), _ = data_dict['X']
+    train_X, train_v_X = fit_data['X']
     info = {
         'build_id': str(uuid.uuid4()),
         'fit_time': elapsed_time,

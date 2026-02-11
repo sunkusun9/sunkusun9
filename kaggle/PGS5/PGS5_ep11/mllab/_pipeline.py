@@ -289,7 +289,7 @@ class Pipeline:
             result.extend(self._get_all_nodes_in_grp(child_grp))
         return result
 
-    def _get_effected_nodes(self, nodes):
+    def _get_affected_nodes(self, nodes):
         priorities = {}
         queue = []
 

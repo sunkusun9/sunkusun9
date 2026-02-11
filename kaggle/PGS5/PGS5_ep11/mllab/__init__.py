@@ -1,3 +1,5 @@
+__version__ = "0.1.0"
+
 from ._experimenter import Experimenter
 from ._connector import Connector
 from .collector import Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector

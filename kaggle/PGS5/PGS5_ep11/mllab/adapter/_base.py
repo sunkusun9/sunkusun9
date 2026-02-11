@@ -35,7 +35,7 @@ class ModelAdapter(ABC):
         """모델의 fit()에 전달할 파라미터를 구성
 
         Args:
-            data_dict: {key: ((train, train_v), valid), ...} 형태의 데이터 딕셔너리
+            data_dict: {key: (train, train_v), ...} 형태의 데이터 딕셔너리
             X: 입력 데이터의 key
             y: 타겟 데이터의 key (Optional, default=None)
             params (dict): Processor에서 전달된 추가 파라미터 (Optional, default=None)

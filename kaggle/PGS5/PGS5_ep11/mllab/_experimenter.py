@@ -22,6 +22,7 @@ from ._pipeline import Pipeline
 from ._node_processor import resolve_columns
 from ._connector import Connector
 from .collector import Collector, MetricCollector, StackingCollector, ModelAttrCollector, SHAPCollector, OutputCollector
+from ._trainer import Trainer
 
 def _get_data_size(data):
     if data is None:
@@ -116,6 +117,7 @@ class Experimenter():
         self.cache = DataCache(maxsize=cache_maxsize)
         self.grps = {}
         self.collectors = {}
+        self.trainers = {}
         self.status = "open"
 
     def _check_open(self):
@@ -166,6 +168,40 @@ class Experimenter():
         self.collect(collector)
         self._save()
         return collector
+
+    def add_trainer(self, name, data=None, splitter=None, splitter_params=None, exist='skip'):
+        if name in self.trainers:
+            if exist == 'skip':
+                return self.trainers[name]
+            elif exist == 'error':
+                raise RuntimeError(f"Trainer '{name}' already exists")
+
+        if data is None:
+            trainer_data = self.data
+        else:
+            trainer_data = wrap(data)
+
+        if splitter == 'same':
+            if splitter_params is not None:
+                raise ValueError("splitter_params must be None when splitter='same'")
+            trainer_splitter = self.sp_v
+            trainer_splitter_params = self.splitter_params
+        else:
+            trainer_splitter = splitter
+            trainer_splitter_params = splitter_params if splitter_params is not None else {}
+
+        trainer = Trainer(
+            name=name,
+            pipeline=self.pipeline,
+            data=trainer_data,
+            path=self.path / '__trainer' / name,
+            splitter=trainer_splitter,
+            splitter_params=trainer_splitter_params,
+            logger=self.logger,
+        )
+        self.trainers[name] = trainer
+        self._save()
+        return trainer
 
     def _validate_name(self, name):
         """Node 또는 NodeGroup 이름 검증
@@ -344,11 +380,14 @@ class Experimenter():
         for v in self.collectors.values():
             v.reset_nodes(nodes)
 
+        for v in self.trainers.values():
+            v.reset_nodes(nodes)
+
     def build(self, nodes = None, rebuild = False):
         self._check_open()
         node_names = self.pipeline.get_node_names(nodes)
         target_nodes = list()
-        for i in self.pipeline._get_effected_nodes([None]):
+        for i in self.pipeline._get_affected_nodes([None]):
             node = self.pipeline.get_node(i)
             grp = self.pipeline.get_grp(node.grp)
             if grp.role == 'stage' and i not in self.node_objs:
@@ -410,7 +449,7 @@ class Experimenter():
         self._check_open()
         node_names = set(self.pipeline.get_node_names(nodes))
         target_nodes = list()
-        for i in self.pipeline._get_effected_nodes([None]):
+        for i in self.pipeline._get_affected_nodes([None]):
             node = self.pipeline.get_node(i)
             grp = self.pipeline.get_grp(node.grp)
             if grp.role == 'head' and i not in self.node_objs and i in node_names:
@@ -523,7 +562,7 @@ class Experimenter():
         # built head 노드 중 connector 매칭
         target_nodes = []
         node_attrs_cache = {}
-        for name in self.pipeline._get_effected_nodes([None]):
+        for name in self.pipeline._get_affected_nodes([None]):
             node = self.pipeline.get_node(name)
             grp = self.pipeline.get_grp(node.grp)
             if name not in self.node_objs:
@@ -665,157 +704,148 @@ class Experimenter():
             outer_valid_data = self.data.iloc(self.valid_idx_list[idx])
             if v is not None:
                 outer_valid_data = outer_valid_data.select_columns(v)
-            def ret_func():
-                for train_v_idx, valid_v_idx in self.train_idx_list[idx]:
-                    if v is None:
-                        train_data = self.data.iloc(train_v_idx)
-                        train_v_data = self.data.iloc(valid_v_idx) if valid_v_idx is not None else None
+            
+            for train_v_idx, valid_v_idx in self.train_idx_list[idx]:
+                if v is None:
+                    train_data = self.data.iloc(train_v_idx)
+                    train_v_data = self.data.iloc(valid_v_idx) if valid_v_idx is not None else None
+                else:
+                    train_data = self.data.iloc(train_v_idx).select_columns(v)
+                    if valid_v_idx is not None:
+                        train_v_data = self.data.iloc(valid_v_idx).select_columns(v)
                     else:
-                        train_data = self.data.iloc(train_v_idx).select_columns(v)
-                        if valid_v_idx is not None:
-                            train_v_data = self.data.iloc(valid_v_idx).select_columns(v)
-                        else:
-                            train_v_data = None
+                        train_v_data = None
 
-                    yield (train_data, train_v_data), outer_valid_data
+                yield (train_data, train_v_data), outer_valid_data
+            return
 
-            return ret_func()
         cached = self.cache.get_data(node, "all", idx)
         if cached is not None:
             sub = self.node_objs[node].get_objs(idx)
-            def ret_func():
-                for ((train_result, train_v_result), valid_result), (obj, _, _) in zip(cached, sub):
-                    X = resolve_columns(train_result, v, processor=obj)
-                    train_result = train_result.select_columns(X)
-                    if train_v_result is not None:
-                        train_v_result = train_v_result.select_columns(X)
-                    valid_result = valid_result.select_columns(X)
-                    yield (train_result, train_v_result), valid_result
-            return ret_func()
+            for ((train_result, train_v_result), valid_result), (obj, _, _) in zip(cached, sub):
+                X = resolve_columns(train_result, v, processor=obj)
+                train_result = train_result.select_columns(X)
+                if train_v_result is not None:
+                    train_v_result = train_v_result.select_columns(X)
+                valid_result = valid_result.select_columns(X)
+                yield (train_result, train_v_result), valid_result
+            return
         it = self.get_node_data(node, idx)
         sub = self.node_objs[node].get_objs(idx)
         use_cache = self.cache_maxsize > 0
         cache_data = list() if use_cache else None
-        def ret_func():
-            for data_dict, (obj, train_, info) in zip(it, sub):
-                # X key로 입력 데이터 가져오기
-                (train_X, train_v_X), valid_X = data_dict['X']
+        
+        for data_dict, (obj, train_, info) in zip(it, sub):
+            # X key로 입력 데이터 가져오기
+            (train_X, train_v_X), valid_X = data_dict['X']
 
-                # train data 처리
-                if train_ is None:
-                    train_result = obj.process(train_X)
-                else:
-                    train_result = train_
+            # train data 처리
+            if train_ is None:
+                train_result = obj.process(train_X)
+            else:
+                train_result = train_
 
-                # train_v data 처리
-                if train_v_X is not None:
-                    train_v_result = obj.process(train_v_X)
-                else:
-                    train_v_result = None
+            # train_v data 처리
+            if train_v_X is not None:
+                train_v_result = obj.process(train_v_X)
+            else:
+                train_v_result = None
 
-                # valid data 처리 (외부 fold의 valid)
-                valid_result = obj.process(valid_X)
-                if use_cache:
-                    cache_data.append(((train_result, train_v_result), valid_result))
-                # 필요하면 컬럼 필터링
-                if v is not None:
-                    X = resolve_columns(train_result, v, processor=obj)
-                    train_result = train_result.select_columns(X)
-                    if train_v_result is not None:
-                        train_v_result = train_v_result.select_columns(X)
-                    valid_result = valid_result.select_columns(X)
+            # valid data 처리 (외부 fold의 valid)
+            valid_result = obj.process(valid_X)
+            if use_cache:
+                cache_data.append(((train_result, train_v_result), valid_result))
+            # 필요하면 컬럼 필터링
+            if v is not None:
+                X = resolve_columns(train_result, v, processor=obj)
+                train_result = train_result.select_columns(X)
+                if train_v_result is not None:
+                    train_v_result = train_v_result.select_columns(X)
+                valid_result = valid_result.select_columns(X)
 
-                yield (train_result, train_v_result), valid_result
+            yield (train_result, train_v_result), valid_result
         if use_cache:
             self.cache.put_data(node, "all", idx, cache_data)
-        return ret_func()
 
     def get_node_train_output(self, idx, node, v=None):
         if node is None:
-            def ret_func():
-                for train_v_idx, valid_v_idx in self.train_idx_list[idx]:
-                    if v is None:
-                        train_data = self.data.iloc(train_v_idx)
-                        train_v_data = self.data.iloc(valid_v_idx) if valid_v_idx is not None else None
+            for train_v_idx, valid_v_idx in self.train_idx_list[idx]:
+                if v is None:
+                    train_data = self.data.iloc(train_v_idx)
+                    train_v_data = self.data.iloc(valid_v_idx) if valid_v_idx is not None else None
+                else:
+                    train_data = self.data.iloc(train_v_idx).select_columns(v)
+                    if valid_v_idx is not None:
+                        train_v_data = self.data.iloc(valid_v_idx).select_columns(v)
                     else:
-                        train_data = self.data.iloc(train_v_idx).select_columns(v)
-                        if valid_v_idx is not None:
-                            train_v_data = self.data.iloc(valid_v_idx).select_columns(v)
-                        else:
-                            train_v_data = None
+                        train_v_data = None
 
-                    yield train_data, train_v_data
-            return ret_func()
+                yield train_data, train_v_data
+            return
         cached = self.cache.get_data(node, "train", idx)
         if cached is not None:
             sub = self.node_objs[node].get_objs(idx)
-            def ret_func():
-                for (train_result, train_v_result), (obj, _, _) in zip(cached, sub):
-                    X = resolve_columns(train_result, v, processor=obj)
-                    train_result = train_result.select_columns(X)
-                    if train_v_result is not None:
-                        train_v_result = train_v_result.select_columns(X)
-                    yield train_result, train_v_result
-            return ret_func()
+            for (train_result, train_v_result), (obj, _, _) in zip(cached, sub):
+                X = resolve_columns(train_result, v, processor=obj)
+                train_result = train_result.select_columns(X)
+                if train_v_result is not None:
+                    train_v_result = train_v_result.select_columns(X)
+                yield train_result, train_v_result
+            return
+
         it = self.get_node_data_train(node, idx)
         sub = self.node_objs[node].get_objs(idx)
         cache_data = list()
-        def ret_func():
-            for data_dict, (obj, train_, info) in zip(it, sub):
-                train_X, train_v_X = data_dict['X']
-                train_result = obj.process(train_X) if train_ is None else train_
-                if train_v_X is not None:
-                    train_v_result = obj.process(train_v_X)
-                else:
-                    train_v_result = None
-                cache_data.append((train_result, train_v_result))
-                if v is not None:
-                    X = resolve_columns(train_result, v, processor=obj)
-                    train_result = train_result.select_columns(X)
-                    if train_v_result is not None:
-                        train_v_result = train_v_result.select_columns(X)
-                yld = train_result, train_v_result
-                yield yld
+        for data_dict, (obj, train_, info) in zip(it, sub):
+            train_X, train_v_X = data_dict['X']
+            train_result = obj.process(train_X) if train_ is None else train_
+            if train_v_X is not None:
+                train_v_result = obj.process(train_v_X)
+            else:
+                train_v_result = None
+            cache_data.append((train_result, train_v_result))
+            if v is not None:
+                X = resolve_columns(train_result, v, processor=obj)
+                train_result = train_result.select_columns(X)
+                if train_v_result is not None:
+                    train_v_result = train_v_result.select_columns(X)
+            yld = train_result, train_v_result
+            yield yld
         self.cache.put_data(node, "train", idx, cache_data)
-        return ret_func()
     
     def get_node_valid_output(self, idx, node, v=None):
         if node is None:
             outer_valid_data = self.data.iloc(self.valid_idx_list[idx])
             if v is not None:
                 outer_valid_data = outer_valid_data.select_columns(v)
+            
+            for _ in range(self.get_n_splits_inner()):
+                yield outer_valid_data
 
-            def ret_func():
-                for _ in range(self.get_n_splits_inner()):
-                    yield outer_valid_data
-
-            return ret_func()
         cached = self.cache.get_data(node, "valid", idx)
         if cached is not None:
             sub = self.node_objs[node].get_objs(idx)
-            def ret_func():
-                for valid_result, (obj, _, _) in zip(cached, sub):
-                    X = resolve_columns(valid_result, v, processor=obj)
-                    valid_result = valid_result.select_columns(X)
-                    yield valid_result
-            return ret_func()
+            for valid_result, (obj, _, _) in zip(cached, sub):
+                X = resolve_columns(valid_result, v, processor=obj)
+                valid_result = valid_result.select_columns(X)
+                yield valid_result
+
         it = self.get_node_data_valid(node, idx)
         sub = self.node_objs[node].get_objs(idx)
         use_cache = self.cache_maxsize > 0
         cache_data = list() if use_cache else None
-        def ret_func():
-            for data_dict, (obj, train_, info) in zip(it, sub):
-                # X key로 valid 데이터 가져오기
-                valid_X = data_dict['X']
-                # valid data 처리 (외부 fold의 valid)
-                valid_result = obj.process(valid_X)
-                if use_cache:
-                    cache_data.append(valid_result)
-                # 필요하면 컬럼 필터링
-                if v is not None:
-                    X = resolve_columns(valid_result, v, processor=obj)
-                    valid_result = valid_result.select_columns(X)
-                yield valid_result
+        for data_dict, (obj, train_, info) in zip(it, sub):
+            # X key로 valid 데이터 가져오기
+            valid_X = data_dict['X']
+            # valid data 처리 (외부 fold의 valid)
+            valid_result = obj.process(valid_X)
+            if use_cache:
+                cache_data.append(valid_result)
+            # 필요하면 컬럼 필터링
+            if v is not None:
+                X = resolve_columns(valid_result, v, processor=obj)
+                valid_result = valid_result.select_columns(X)
+            yield valid_result
         if use_cache:
             self.cache.put_data(node, "valid", idx, cache_data)
         return ret_func()
@@ -961,6 +991,7 @@ class Experimenter():
             'pipeline': self.pipeline,
             'node_obj_keys': list(self.node_objs.keys()),
             'collector_keys': {name: type(c).__name__ for name, c in self.collectors.items()},
+            'trainer_keys': list(self.trainers.keys()),
             'status': self.status
         }
 
@@ -1023,6 +1054,20 @@ class Experimenter():
             if (coll_path / '__config.pkl').exists():
                 collector = cls.load(coll_path)
                 exp.collectors[coll_name] = collector
+
+        # Trainer 복원
+        from ._trainer import Trainer
+        for trainer_name in save_data.get('trainer_keys', []):
+            trainer_path = filepath / '__trainer' / trainer_name
+            if (trainer_path / '__trainer.pkl').exists():
+                trainer = Trainer._load(
+                    trainer_path,
+                    pipeline=exp.pipeline,
+                    data=exp.data,
+                    cache=exp.cache,
+                    logger=exp.logger,
+                )
+                exp.trainers[trainer_name] = trainer
 
         exp.logger.info(f"Loaded: {len(exp.pipeline.nodes) - 1} node(s), {len(exp.pipeline.grps)} group(s), {len(exp.train_idx_list)} fold(s)")
         return exp
